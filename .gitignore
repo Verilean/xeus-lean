@@ -1,5 +1,8 @@
 # Build artifacts
 build/
+build-cmake/
+.lake/
+repl/
 *.o
 *.a
 *.so
@@ -32,6 +35,17 @@ test_basic
 
 # Generated files
 share/jupyter/kernels/xlean/kernel.json
+test_connection.json
+*.json.bak
+*.toml.bak
+
+# Test artifacts
+test/
+test_ffi_direct.cpp
+test_repl.cpp
+xeus-haskell/
+a.txt
+log
 
 # macOS
 .DS_Store
