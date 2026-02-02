@@ -24,16 +24,28 @@ lean_exe xlean where
   supportInterpreter := true
   srcDir := "src"
   -- Link with the xeus FFI static library built by cmake
-  moreLinkArgs := #[
-   "./build-cmake/libxeus_ffi.a",
-   "-L./build-cmake/_deps/xeus-build",
-   "-L./build-cmake/_deps/xeus-zmq-build",
-   "-Wl,-rpath,@executable_path/../../../build-cmake/_deps/xeus-build",
-   "-Wl,-rpath,@executable_path/../../../build-cmake/_deps/xeus-zmq-build",
-   "-lxeus",
-   "-lxeus-zmq",
-   "-lstdc++"
-  ]
+  -- Platform-specific link arguments
+  moreLinkArgs :=
+    if System.Platform.isWindows then
+      #["./build-cmake/libxeus_ffi.a",
+        "-L./build-cmake/_deps/xeus-build",
+        "-L./build-cmake/_deps/xeus-zmq-build",
+        "-lxeus", "-lxeus-zmq", "-lstdc++"]
+    else if System.Platform.isOSX then
+      #["./build-cmake/libxeus_ffi.a",
+        "-L./build-cmake/_deps/xeus-build",
+        "-L./build-cmake/_deps/xeus-zmq-build",
+        "-Wl,-rpath,@executable_path/../../../build-cmake/_deps/xeus-build",
+        "-Wl,-rpath,@executable_path/../../../build-cmake/_deps/xeus-zmq-build",
+        "-lxeus", "-lxeus-zmq", "-lstdc++"]
+    else  -- Linux
+      #["-Wl,--start-group",
+        "./build-cmake/libxeus_ffi.a",
+        "-L./build-cmake/_deps/xeus-build",
+        "-L./build-cmake/_deps/xeus-zmq-build",
+        "-lxeus", "-lxeus-zmq",
+        "-Wl,--end-group",
+        "-lstdc++", "-lpthread", "-ldl"]
 
 /-- Script to build xlean via cmake -/
 script buildXlean do

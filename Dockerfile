@@ -1,5 +1,5 @@
 # Dockerfile for xeus-lean
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 # Avoid interactive prompts during build
 ENV DEBIAN_FRONTEND=noninteractive
@@ -12,7 +12,9 @@ RUN apt-get update && apt-get install -y \
     cmake \
     nlohmann-json3-dev \
     libzmq3-dev \
-    libcppzmq-dev \
+    cppzmq-dev \
+    uuid-dev \
+    libssl-dev \
     python3 \
     python3-pip \
     ca-certificates \
@@ -23,7 +25,7 @@ RUN curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -
 ENV PATH="/root/.elan/bin:${PATH}"
 
 # Install Jupyter client for testing
-RUN pip3 install jupyter-client
+RUN pip3 install --break-system-packages jupyter-client
 
 # Set working directory
 WORKDIR /app
