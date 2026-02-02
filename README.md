@@ -43,7 +43,7 @@ A Jupyter kernel for Lean 4 based on the [xeus](https://github.com/jupyter-xeus/
 **Key Design**:
 - **Lean main loop** (`src/XeusKernel.lean`) polls for messages and executes code
 - **C++ FFI layer** (`src/xeus_ffi.cpp`) exposes xeus functionality to Lean
-- **REPL integration** (`src/REPL/`) provides command evaluation
+- **REPL integration** (`src/REPL/`) provides command evaluation (from [leanprover-community/repl](https://github.com/leanprover-community/repl))
 - **Static linking** bundles everything into single `xlean` executable
 
 ## Dependencies
@@ -236,6 +236,7 @@ xeus-lean/
 │   ├── XeusKernel.lean         # Main event loop (Lean owns this)
 │   ├── xeus_ffi.cpp            # C++ FFI exports to Lean
 │   └── REPL/                   # Lean REPL implementation
+│                               # (from github.com/leanprover-community/repl)
 ├── include/
 │   └── xeus_ffi.h              # FFI function declarations
 ├── build-cmake/
@@ -271,6 +272,9 @@ See `CONTRIBUTING.md` for development guidelines.
 
 ## Acknowledgments
 
-- Built on the [xeus](https://github.com/jupyter-xeus/xeus) framework
-- Uses the Lean 4 [REPL](https://github.com/leanprover-community/repl)
-- Inspired by various xeus-based kernels
+This project builds upon the excellent work of:
+
+- **[xeus](https://github.com/jupyter-xeus/xeus) framework** by QuantStack - provides the robust Jupyter kernel protocol implementation
+- **[Lean 4 REPL](https://github.com/leanprover-community/repl)** by the Lean community - the `src/REPL/` directory contains code from this project, which provides the command evaluation and elaboration infrastructure
+- **[xeus-zmq](https://github.com/jupyter-xeus/xeus-zmq)** - ZMQ-based messaging implementation for xeus
+- Various xeus-based kernel implementations that inspired this architecture
