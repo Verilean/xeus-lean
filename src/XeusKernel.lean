@@ -44,10 +44,6 @@ opaque kernelSendResult (handle : @& KernelHandle) (executionCount : UInt32) (re
 @[extern "xeus_kernel_send_error"]
 opaque kernelSendError (handle : @& KernelHandle) (executionCount : UInt32) (error : @& String) : IO Unit
 
-/-- Send stream output (stdout/stderr) -/
-@[extern "xeus_kernel_send_stream"]
-opaque kernelSendStream (handle : @& KernelHandle) (name : @& String) (text : @& String) : IO Unit
-
 /-- Check if kernel should shutdown -/
 @[extern "xeus_kernel_should_stop"]
 opaque kernelShouldStop (handle : @& KernelHandle) : IO Bool

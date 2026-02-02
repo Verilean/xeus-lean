@@ -40,7 +40,7 @@ inline bool is_debug_enabled() {
 // Simple interpreter that queues messages for Lean to process
 class lean_interpreter : public xeus::xinterpreter {
 public:
-    lean_interpreter() : m_message_mutex(), m_current_execution_count(0), m_should_stop(false), m_current_callback(nullptr) {
+    lean_interpreter() : m_message_mutex(), m_should_stop(false), m_current_callback(nullptr) {
         DEBUG_LOG("[C++ FFI] lean_interpreter constructed, mutex at " << (void*)&m_message_mutex);
     }
     virtual ~lean_interpreter() = default;
@@ -65,7 +65,6 @@ public:
         msg["content"]["execution_count"] = execution_count;
 
         m_message_queue.push(msg.dump());
-        m_current_execution_count = execution_count;
         m_current_callback = cb;
 
         // Don't send reply now - Lean will call send_result/send_error later
@@ -173,10 +172,6 @@ public:
         }
     }
 
-    void send_stream(const std::string& name, const std::string& text) {
-        publish_stream(name, text);
-    }
-
     bool should_stop() const {
         return m_should_stop;
     }
@@ -184,7 +179,6 @@ public:
 private:
     std::queue<std::string> m_message_queue;
     std::mutex m_message_mutex;
-    int m_current_execution_count = 0;
     bool m_should_stop = false;
     send_reply_callback m_current_callback;
 };
@@ -386,28 +380,6 @@ lean_object* xeus_kernel_send_error(lean_object* handle_obj, uint32_t exec_count
 
     } catch (const std::exception& e) {
         std::cerr << "[C++ FFI] Send error failed: " << e.what() << std::endl;
-        lean_object* unit = lean_box(0);
-        return lean_io_result_mk_ok(unit);
-    }
-}
-
-// Send stream
-lean_object* xeus_kernel_send_stream(lean_object* handle_obj, lean_object* name_obj,
-                                     lean_object* text_obj, lean_object* /* world */) {
-    try {
-        auto* state = to_kernel_state(handle_obj);
-
-        if (state && state->interpreter) {
-            std::string name = lean_string_cstr(name_obj);
-            std::string text = lean_string_cstr(text_obj);
-            state->interpreter->send_stream(name, text);
-        }
-
-        lean_object* unit = lean_box(0);
-        return lean_io_result_mk_ok(unit);
-
-    } catch (const std::exception& e) {
-        std::cerr << "[C++ FFI] Send stream failed: " << e.what() << std::endl;
         lean_object* unit = lean_box(0);
         return lean_io_result_mk_ok(unit);
     }
