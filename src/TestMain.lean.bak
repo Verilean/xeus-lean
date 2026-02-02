@@ -1,0 +1,3 @@
+def main : IO Unit := do
+  IO.println "TestMain running!"
+  IO.FS.writeFile "/tmp/testmain_works.txt" "Success\n"

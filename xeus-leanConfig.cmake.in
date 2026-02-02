@@ -1,0 +1,17 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(xeus @xeus_REQUIRED_VERSION@)
+find_dependency(nlohmann_json)
+
+if(NOT TARGET xeus-lean AND NOT TARGET xeus-lean-static)
+    include("${CMAKE_CURRENT_LIST_DIR}/@PROJECT_NAME@Targets.cmake")
+
+    if (TARGET xeus-lean AND TARGET xeus-lean-static)
+        get_target_property(_type xeus-lean TYPE)
+        if (_type STREQUAL "SHARED_LIBRARY")
+            set_target_properties(xeus-lean PROPERTIES IMPORTED_GLOBAL TRUE)
+        endif ()
+        unset(_type)
+    endif ()
+endif()
