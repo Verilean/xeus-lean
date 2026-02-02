@@ -45,7 +45,9 @@ lean_exe xlean where
         "-L./build-cmake/_deps/xeus-zmq-build",
         "-lxeus", "-lxeus-zmq",
         "-Wl,--end-group",
-        "-lstdc++", "-lpthread", "-ldl"]
+        "-L/usr/lib/gcc/x86_64-linux-gnu/13",
+        "-L/usr/lib/x86_64-linux-gnu",
+        "-lstdc++", "-lgcc_s", "-lpthread", "-lm", "-ldl"]
 
 /-- Script to build xlean via cmake -/
 script buildXlean do

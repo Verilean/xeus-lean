@@ -131,8 +131,16 @@ public:
             // Try to parse as JSON first
             try {
                 auto result = json::parse(result_json);
-                // If it's valid JSON, pretty-print it
-                pub_data["text/plain"] = result.dump(2);
+
+                // ★ Important: If HTML or SVG is included, use the structure as-is
+                if (result.is_object() &&
+                    (result.contains("text/html") || result.contains("image/svg+xml"))) {
+                    pub_data = result;
+                } else {
+                    // Output everything else as text
+                    pub_data["text/plain"] = result.is_string() ?
+                        result.get<std::string>() : result.dump(2);
+                }
             } catch (const json::parse_error&) {
                 // Not JSON, use as plain text
                 pub_data["text/plain"] = result_json;
