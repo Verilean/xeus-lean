@@ -42,15 +42,18 @@ lean_exe xlean where
         "-Wl,-rpath,@executable_path/../../../build-cmake/_deps/xeus-zmq-build",
         "-lxeus", "-lxeus-zmq", "-lstdc++"]
     else  -- Linux
+      -- FFI library must be built with leanc (Lean's clang/libc++) for ABI
+      -- compatibility. Lean's linker uses its own sysroot and libc++, so
+      -- libstdc++ and GCC runtime are not needed.
       #["-Wl,--start-group",
         "./build-cmake/libxeus_ffi.a",
         "-L./build-cmake/_deps/xeus-build",
         "-L./build-cmake/_deps/xeus-zmq-build",
-        "-lxeus", "-lxeus-zmq",
+        "-L./build-cmake/_deps/libzmq-build/lib",
+        "-lxeus", "-lxeus-zmq", "-lzmq",
         "-Wl,--end-group",
-        "-L/usr/lib/gcc/x86_64-linux-gnu/13",
         "-L/usr/lib/x86_64-linux-gnu",
-        "-lstdc++", "-lgcc_s", "-lpthread", "-lm", "-ldl"]
+        "-lpthread", "-lm", "-ldl"]
 
 /-- Script to build xlean via cmake -/
 script buildXlean do
