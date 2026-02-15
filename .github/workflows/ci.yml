@@ -26,7 +26,8 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y cmake build-essential nlohmann-json3-dev \
-          libzmq3-dev uuid-dev libssl-dev python3 python3-pip
+          libzmq3-dev uuid-dev libssl-dev python3 python3-pip \
+          clang libc++-dev libc++abi-dev
 
     - name: Install Lean via elan
       run: |
@@ -44,7 +45,10 @@ jobs:
         cmake -S . -B build-cmake \
           -DCMAKE_C_COMPILER=leanc \
           -DCMAKE_CXX_COMPILER=leanc \
-          -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
+          -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+          -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH \
+          -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
+          -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH
         cmake --build build-cmake
 
     - name: Build Lean kernel
