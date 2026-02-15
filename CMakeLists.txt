@@ -292,7 +292,7 @@ if(EMSCRIPTEN)
     # Node.js test executable (standalone, no xeus dependency)
     # ========================================================
 
-    add_executable(test_wasm_node test_wasm_node.cpp debug_hash.cpp ${WASM_SYMTAB_FILE})
+    add_executable(test_wasm_node test_wasm_node.cpp ${WASM_SYMTAB_FILE})
     target_include_directories(test_wasm_node PRIVATE ${LEAN4_INCLUDE_DIR})
     target_link_libraries(test_wasm_node PRIVATE
         ${STAGE0_REPL_LIB}

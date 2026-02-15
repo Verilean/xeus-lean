@@ -86,7 +86,7 @@ jobs:
       run: pixi run -e wasm-build fix-emscripten-links || true
 
     - name: Build Lean REPL (lake)
-      run: lake build WasmRepl
+      run: lake build REPL WasmRepl
 
     - name: Configure WASM build (emcmake)
       run: |

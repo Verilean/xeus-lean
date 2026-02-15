@@ -28,7 +28,7 @@ all: build test
 
 # Generate .c files from Lean source (required before cmake)
 lake:
-	lake build WasmRepl
+	lake build REPL WasmRepl
 
 configure: lake
 	$(NIX_SHELL) '\
