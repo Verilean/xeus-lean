@@ -418,6 +418,14 @@ else()
         FetchContent_MakeAvailable(cppzmq)
     endif()
 
+    # Help xeus-zmq find FetchContent-built ZeroMQ/cppzmq via find_package()
+    if(NOT ZeroMQ_FOUND)
+        set(ZeroMQ_DIR "${CMAKE_BINARY_DIR}/_deps/libzmq-build" CACHE PATH "" FORCE)
+    endif()
+    if(NOT cppzmq_FOUND)
+        set(cppzmq_DIR "${CMAKE_BINARY_DIR}/_deps/cppzmq-build" CACHE PATH "" FORCE)
+    endif()
+
     # Fetch xeus-zmq
     FetchContent_Declare(
         xeus-zmq

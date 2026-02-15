@@ -45,12 +45,12 @@ lean_exe xlean where
       -- FFI library must be built with leanc (Lean's clang/libc++) for ABI
       -- compatibility. Lean's linker uses its own sysroot and libc++, so
       -- libstdc++ and GCC runtime are not needed.
-      -- Search paths: FetchContent dirs first, then system path as fallback.
-      -- All -L must precede -l flags so the linker can find libraries.
+      -- All deps built from source via FetchContent; do NOT add system lib
+      -- paths like -L/usr/lib/x86_64-linux-gnu because leanc uses --sysroot
+      -- with its own bundled glibc, and system glibc conflicts (__libc_csu_init).
       #["-L./build-cmake/_deps/xeus-build",
         "-L./build-cmake/_deps/xeus-zmq-build",
         "-L./build-cmake/_deps/libzmq-build/lib",
-        "-L/usr/lib/x86_64-linux-gnu",
         "-Wl,--start-group",
         "./build-cmake/libxeus_ffi.a",
         "-lxeus", "-lxeus-zmq", "-lzmq",
