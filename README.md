@@ -1,280 +1,137 @@
 # xeus-lean
 
-A Jupyter kernel for Lean 4 based on the [xeus](https://github.com/jupyter-xeus/xeus) framework.
-
-## Overview
-
-`xeus-lean` is a Jupyter kernel for Lean 4 that enables interactive theorem proving and programming in Jupyter notebooks. Unlike traditional kernel designs, **Lean owns the main event loop** and calls the C++ xeus library via FFI (Foreign Function Interface). This architecture provides clean integration with Lean's runtime while leveraging the robust xeus implementation of the Jupyter protocol.
+A Jupyter kernel for [Lean 4](https://lean-lang.org/) based on the [xeus](https://github.com/jupyter-xeus/xeus) framework.
+Runs both as a **native desktop kernel** and as a **WASM kernel in the browser** via JupyterLite.
 
 ## Features
 
-- **Interactive Lean 4**: Execute Lean code in Jupyter notebooks
-- **Environment Persistence**: State is maintained across cells with environment tracking
-- **Clean Output**: Info messages display as plain text, errors show detailed JSON
-- **IO Support**: Full support for `IO` actions including `IO.println`
-- **Error Messages**: Formatted error output with position information
-- **Debug Mode**: Optional verbose logging via `XLEAN_DEBUG` environment variable
-- **Native Performance**: Direct FFI calls with no subprocess overhead
+- **Interactive Lean 4** in Jupyter notebooks — `#eval`, `#check`, `def`, `theorem`, etc.
+- **Environment persistence** — definitions carry across cells
+- **Two build targets**:
+  - **Native**: Lean-owned main loop, C++ xeus via FFI, runs in Jupyter Lab/Notebook
+  - **WASM**: Compiled to WebAssembly via emscripten Memory64, runs in JupyterLite (browser, no server needed)
 
-## Architecture
+## Quick Start
 
-```
-┌─────────────────┐
-│ Jupyter Client  │
-│  (Notebook/Lab) │
-└────────┬────────┘
-         │ Jupyter Protocol (ZMQ)
-┌────────▼────────┐
-│   Lean Main     │  ← Lean owns the event loop
-│  (XeusKernel)   │
-└────────┬────────┘
-         │ FFI calls
-┌────────▼────────┐
-│  C++ xeus lib   │  ← Static library (libxeus_ffi.a)
-│  (xeus_ffi.cpp) │
-└────────┬────────┘
-         │ ZMQ
-┌────────▼────────┐
-│  xeus framework │
-│   (protocol)    │
-└─────────────────┘
-```
+### Try in the Browser (WASM)
 
-**Key Design**:
-- **Lean main loop** (`src/XeusKernel.lean`) polls for messages and executes code
-- **C++ FFI layer** (`src/xeus_ffi.cpp`) exposes xeus functionality to Lean
-- **REPL integration** (`src/REPL/`) provides command evaluation (from [leanprover-community/repl](https://github.com/leanprover-community/repl))
-- **Static linking** bundles everything into single `xlean` executable
+Visit the [GitHub Pages deployment](https://verilean.github.io/xeus-lean/) — no installation required.
 
-## Dependencies
-
-- **CMake** (>= 3.10)
-- **C++17** compiler
-- **xeus** (>= 5.0.0)
-- **xeus-zmq** (>= 1.0.2)
-- **nlohmann_json**
-- **Lean 4** toolchain (via elan)
-- **Lake** (Lean build tool)
-
-## Building from Source
+### Native Build
 
 ```bash
-# 1. Clone the repository
-git clone <repository-url>
-cd xeus-lean
+# Install Lean 4 via elan
+curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y
 
-# 2. Build C++ dependencies (xeus, xeus-zmq)
-./build.sh
-
-# 3. Build xlean kernel
+# Build
+cmake -S . -B build-cmake
+cmake --build build-cmake
 lake build xlean
 
-# 4. Install kernel spec (creates Jupyter kernel specification)
-# TODO: Add installation script
-
-# 5. Verify installation
-jupyter kernelspec list  # Should show xlean
+# Install kernel spec and launch
+lake run installKernel
+jupyter lab  # Select "Lean 4" kernel
 ```
 
-## Usage
+### WASM Build
 
-### Jupyter Lab
+Requires: [nix](https://nixos.org/download/) and [pixi](https://pixi.sh/)
 
 ```bash
-jupyter lab
-# Create a new notebook and select "Lean 4" kernel
+# Full pipeline: build + test + JupyterLite site + serve on :8888
+make deploy
+
+# Or step-by-step:
+make lake        # Generate .c files from Lean source
+make configure   # emcmake cmake
+make build       # emmake make (xlean + test_wasm_node)
+make test        # Run WASM tests in Node.js
+make deploy      # Build JupyterLite site + serve
 ```
 
-### Jupyter Notebook
+See [WASM_BUILD.md](WASM_BUILD.md) for architecture details and the 5 key bottlenecks solved.
 
-```bash
-jupyter notebook
-# Select "Lean 4" from the kernel menu
-```
-
-### Example Session
+## Example Session
 
 ```lean
-# Cell 1: Define a function
+-- Cell 1: Define a function
 def factorial : Nat → Nat
   | 0 => 1
   | n + 1 => (n + 1) * factorial n
 
-# Cell 2: Evaluate
-#eval factorial 5  -- Output: 120
+-- Cell 2: Evaluate
+#eval factorial 10  -- 3628800
 
-# Cell 3: IO actions
-def main : IO Unit := IO.println "Hello from Lean!"
-#eval main  -- Output: Hello from Lean!
+-- Cell 3: Type check
+#check @List.map  -- {α β : Type} → (α → β) → List α → List β
 
-# Cell 4: Definitions persist
-#eval factorial 10  -- Can use factorial from Cell 1
+-- Cell 4: IO actions
+#eval IO.println "Hello from Lean!"  -- Hello from Lean!
 ```
 
-## Environment Persistence
+## Architecture
 
-The kernel tracks Lean environment IDs across cells:
-- Each successful cell execution returns a new environment ID
-- Subsequent cells use the previous environment ID
-- Definitions, theorems, and imports persist throughout the session
-- Errors don't update the environment (retry with same state)
+### Native
 
-Example:
-```lean
-# Cell 1
-def x := 42  -- env: 0 → 1
-
-# Cell 2
-def y := x + 1  -- env: 1 → 2 (x is available)
-
-# Cell 3
-#eval y  -- env: 2, outputs: 43
+```
+Jupyter Client ──ZMQ──▶ Lean Main (XeusKernel.lean)
+                             │ FFI
+                        C++ xeus (xeus_ffi.cpp)
 ```
 
-## Output Formatting
+Lean owns the main loop, polls for Jupyter messages, and calls the C++ xeus library via FFI.
 
-The kernel provides clean output for regular execution:
-- **Info messages**: Display as plain text (e.g., `#eval` results)
-- **Errors**: Show full JSON with position, severity, and hints
-- **Empty results**: No output for pure definitions
+### WASM
 
-Example:
-```lean
-#eval IO.println "Hello"
--- Output: Hello
-
-#eval 1 + "string"
--- Output: {
---   "env": 2,
---   "messages": [{
---     "severity": "error",
---     "data": "type mismatch...",
---     ...
---   }]
--- }
+```
+Browser ──Web Worker──▶ xlean.js + xlean.wasm
+                             │
+                        Lean runtime (patched for single-threaded WASM)
+                        + Init .olean files (embedded in VFS)
 ```
 
-## Debug Mode
-
-Enable verbose logging with the `XLEAN_DEBUG` environment variable:
-
-```bash
-# Normal mode (quiet)
-jupyter lab
-
-# Debug mode (verbose logging)
-XLEAN_DEBUG=1 jupyter lab
-```
-
-Debug output includes:
-- FFI initialization steps
-- Message polling and parsing
-- Execution flow
-- Environment state transitions
-- Mutex and memory operations
-
-## Configuration
-
-### Build Configuration
-
-Edit `lakefile.lean` to adjust:
-- Link paths for xeus libraries
-- Interpreter support flag
-- Compiler options
-
-### Runtime Configuration
-
-The kernel uses Jupyter's standard connection file mechanism. Advanced users can:
-- Specify custom connection files
-- Adjust ZMQ ports
-- Configure kernel timeouts
-
-## Known Limitations
-
-1. **REPL Elaborator**: Limited support for infix operators in some contexts
-   - Use `Nat.add 1 1` instead of `1 + 1` if issues arise
-   - Import Lean provides more elaborate context
-2. **Static Linking Required**: Shared library builds had issues with external class registration
-3. **Platform Support**: Currently tested on macOS and Linux
-
-## Troubleshooting
-
-### Kernel doesn't start
-```bash
-# Check xlean executable
-ls .lake/build/bin/xlean
-
-# Run directly to see errors
-./.lake/build/bin/xlean test_connection.json
-```
-
-### Static linking errors
-```bash
-# Rebuild C++ FFI library
-cd build-cmake
-rm libxeus_ffi.a
-cmake --build . --target xeus_ffi
-
-# Rebuild xlean
-cd ..
-lake clean
-lake build xlean
-```
-
-### Import errors
-```bash
-# Ensure Lean search path is initialized
-# Check lean-toolchain matches your Lean version
-cat lean-toolchain
-```
+The entire Lean 4 runtime and Init module are compiled to WASM with emscripten Memory64
+(`-sMEMORY64` for 64-bit pointers matching host `.olean` format).
 
 ## Project Structure
 
 ```
 xeus-lean/
 ├── src/
-│   ├── XeusKernel.lean         # Main event loop (Lean owns this)
-│   ├── xeus_ffi.cpp            # C++ FFI exports to Lean
-│   └── REPL/                   # Lean REPL implementation
-│                               # (from github.com/leanprover-community/repl)
-├── include/
-│   └── xeus_ffi.h              # FFI function declarations
-├── build-cmake/
-│   └── libxeus_ffi.a           # Static library (C++ → Lean)
-├── lakefile.lean               # Lake build configuration
-├── CMakeLists.txt              # C++ build configuration
-└── README.md                   # This file
+│   ├── XeusKernel.lean              # Native: Lean main loop
+│   ├── xeus_ffi.cpp                 # Native: C++ FFI layer
+│   ├── xinterpreter_wasm.cpp        # WASM: xeus-lite interpreter
+│   ├── main_emscripten_kernel.cpp   # WASM: entry point
+│   ├── WasmRepl.lean                # WASM: REPL exports (@[export])
+│   ├── REPL/                        # REPL implementation
+│   │   └── Frontend.lean            # Message accumulation fix
+│   ├── pre.js / post.js             # Emscripten JS hooks
+├── cmake/
+│   ├── LeanRtWasm.cmake             # Build lean4 runtime for WASM
+│   ├── LeanStage0Wasm.cmake         # Build stage0 stdlib for WASM
+│   ├── GenerateSymbolTable.cmake    # dlsym replacement for WASM
+│   ├── fix_extern_signatures.py     # Auto-fix ABI mismatches
+│   └── stubs/                       # Libuv stubs for WASM
+├── CMakeLists.txt                   # Dual native/WASM build
+├── Makefile                         # WASM build automation
+├── lakefile.lean                    # Lake build config
+├── pixi.toml                        # Pixi environments (emscripten, jupyterlite)
+├── WASM_BUILD.md                    # WASM architecture & bottleneck docs
+└── test_wasm_node.cpp               # WASM integration tests
 ```
 
-## Comparison with Other Jupyter Kernels
+## CI/CD
 
-| Aspect | xeus-python | xeus-lean |
-|--------|-------------|-----------|
-| Language runtime | Python interpreter | Lean 4 runtime |
-| Main loop ownership | C++ xeus | Lean |
-| Language integration | Embedded Python | FFI to C++ |
-| State management | Python context | Environment IDs |
-| Build complexity | Medium | High (FFI + static link) |
+GitHub Actions builds both targets on every push:
+- **Native build**: Linux x86_64, uploads `xlean` binary
+- **WASM build**: emscripten Memory64, runs `test_wasm_node`, deploys JupyterLite to GitHub Pages
 
 ## License
 
 Apache License 2.0
 
-## Contributing
-
-Contributions are welcome! Key areas:
-- Better error message formatting
-- Enhanced completion support
-- Rich display for proof goals
-- Documentation improvements
-
-See `CONTRIBUTING.md` for development guidelines.
-
 ## Acknowledgments
 
-This project builds upon the excellent work of:
-
-- **[xeus](https://github.com/jupyter-xeus/xeus) framework** by QuantStack - provides the robust Jupyter kernel protocol implementation
-- **[Lean 4 REPL](https://github.com/leanprover-community/repl)** by the Lean community - the `src/REPL/` directory contains code from this project, which provides the command evaluation and elaboration infrastructure
-- **[xeus-zmq](https://github.com/jupyter-xeus/xeus-zmq)** - ZMQ-based messaging implementation for xeus
-- Various xeus-based kernel implementations that inspired this architecture
+- **[xeus](https://github.com/jupyter-xeus/xeus)** by QuantStack — Jupyter kernel protocol framework
+- **[Lean 4 REPL](https://github.com/leanprover-community/repl)** by the Lean community — `src/REPL/` is based on this project
+- **[xeus-lite](https://github.com/jupyter-xeus/xeus-lite)** — xeus for JupyterLite/WASM
