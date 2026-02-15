@@ -1,6 +1,8 @@
 # Build artifacts
 build-cmake/
+wasm-build/
 .lake/
+.pixi/
 *.o
 *.a
 *.so

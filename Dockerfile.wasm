@@ -1,0 +1,71 @@
+FROM ghcr.io/prefix-dev/pixi:latest AS builder
+
+# Install curl, git for elan, and xz-utils for node binary
+RUN apt-get update && apt-get install -y curl git xz-utils && rm -rf /var/lib/apt/lists/*
+
+# Install Lean via elan
+RUN curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y
+ENV PATH="/root/.elan/bin:${PATH}"
+
+# Install Node.js 23+ (required by emscripten Memory64 WASM output)
+# pixi bundles node v16 which is too old for wasm64
+RUN curl -fsSL https://nodejs.org/dist/v23.6.0/node-v23.6.0-linux-x64.tar.xz \
+    | tar -xJ -C /usr/local --strip-components=1
+
+WORKDIR /opt/xeus-lean
+
+# Copy pixi configuration first for better caching
+COPY pixi.toml pixi.lock* ./
+
+# Install wasm-build and wasm-host environments
+RUN pixi install -e wasm-build || pixi install -e wasm-build --no-lockfile-update
+RUN pixi install -e wasm-host || pixi install -e wasm-host --no-lockfile-update
+
+# Copy source
+COPY . .
+
+# Build Lean REPL (generates .c files needed by cmake)
+RUN lake build REPL WasmRepl
+
+# Build WASM kernel
+# 1. Fix emscripten symlinks
+RUN pixi run -e wasm-build fix-emscripten-links || true
+
+# 2. Configure with emcmake (match CI flags)
+RUN pixi run -e wasm-build emcmake cmake -S . -B wasm-build \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ON
+
+# 3. Build with emmake
+RUN pixi run -e wasm-build emmake make -C wasm-build -j$(nproc) xlean test_wasm_node
+
+# 4. Run WASM tests with system Node.js 23+
+RUN node --experimental-wasm-memory64 wasm-build/test_wasm_node.js
+
+# 5. Install to wasm-host prefix
+RUN PREFIX=$(pixi info -e wasm-host --json 2>/dev/null \
+      | python3 -c "import sys,json; print(json.load(sys.stdin)['environments_info'][0]['prefix'])" \
+      2>/dev/null || echo ".pixi/envs/wasm-host") && \
+    pixi run -e wasm-build cmake --install wasm-build --prefix "$PREFIX"
+
+# 6. Generate JupyterLite static site
+RUN mkdir -p notebooks && \
+    PREFIX=$(pixi info -e wasm-host --json 2>/dev/null \
+      | python3 -c "import sys,json; print(json.load(sys.stdin)['environments_info'][0]['prefix'])" \
+      2>/dev/null || echo ".pixi/envs/wasm-host") && \
+    pixi run -e wasm-build jupyter lite build \
+      --XeusAddon.prefix="$PREFIX" \
+      "--XeusAddon.default_channels=[https://conda.anaconda.org/conda-forge]" \
+      --contents notebooks \
+      --output-dir _output \
+      --force
+
+# --- Serve stage ---
+FROM python:3.12-slim
+
+WORKDIR /app
+COPY --from=builder /opt/xeus-lean/_output /app/dist
+
+EXPOSE 8888
+
+CMD ["python", "-m", "http.server", "8888", "--directory", "/app/dist"]

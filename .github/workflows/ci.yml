@@ -118,9 +118,14 @@ jobs:
         PREFIX=$(pixi info -e wasm-host --json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['environments_info'][0]['prefix'])" 2>/dev/null || echo ".pixi/envs/wasm-host")
         cmake --install wasm-build --prefix "$PREFIX"
 
+    - name: Setup Node.js 23+ for WASM Memory64 tests
+      uses: actions/setup-node@v4
+      with:
+        node-version: '23'
+
     - name: Run WASM tests (test_wasm_node)
       run: |
-        pixi run -e wasm-build node --experimental-wasm-memory64 wasm-build/test_wasm_node.js
+        node --experimental-wasm-memory64 wasm-build/test_wasm_node.js
 
     - name: Build JupyterLite site
       run: |
