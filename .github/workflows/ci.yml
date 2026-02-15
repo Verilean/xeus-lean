@@ -39,16 +39,14 @@ jobs:
 
     - name: Build C++ FFI library
       run: |
-        # Use leanc (Lean's clang wrapper) so the FFI library uses libc++,
-        # matching Lean's linker ABI. STATIC_LIBRARY skips cmake link tests
-        # that fail with leanc's custom sysroot.
+        # Use system clang++ with -stdlib=libc++ so the FFI library's C++ ABI
+        # matches Lean's linker (which uses libc++, not libstdc++).
+        # Using leanc directly as cmake compiler breaks find_package for
+        # system libraries (LibUUID etc.) due to its custom sysroot.
         cmake -S . -B build-cmake \
-          -DCMAKE_C_COMPILER=leanc \
-          -DCMAKE_CXX_COMPILER=leanc \
-          -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
-          -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH \
-          -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
-          -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH
+          -DCMAKE_C_COMPILER=clang \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_CXX_FLAGS="-stdlib=libc++"
         cmake --build build-cmake
 
     - name: Build Lean kernel
