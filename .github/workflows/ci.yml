@@ -26,7 +26,8 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y cmake build-essential nlohmann-json3-dev \
-          uuid-dev libssl-dev python3 python3-pip
+          uuid-dev libssl-dev python3 python3-pip \
+          clang libc++-dev libc++abi-dev
 
     - name: Install Lean via elan
       run: |
@@ -38,19 +39,22 @@ jobs:
 
     - name: Build C++ FFI library
       run: |
-        # Use leanc (Lean's clang wrapper) so compiled code uses leanc's
-        # bundled glibc headers, matching the glibc leanc links against.
-        # System clang++ uses system glibc 2.39 headers which redirect
-        # strtoull→__isoc23_strtoull (C23), missing from leanc's older glibc.
-        # STATIC_LIBRARY skips link tests that fail with leanc's sysroot.
-        # LibUUID paths provided explicitly since leanc's sysroot hides them.
+        # Use system clang++ with libc++ so cmake can find all system
+        # libraries and headers (leanc's sysroot is too minimal for libzmq).
+        # The -stdlib=libc++ ensures C++ ABI matches Lean's linker.
         cmake -S . -B build-cmake \
-          -DCMAKE_C_COMPILER=leanc \
-          -DCMAKE_CXX_COMPILER=leanc \
-          -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
-          -DLibUUID_INCLUDE_DIR=/usr/include \
-          -DLibUUID_LIBRARY=/usr/lib/x86_64-linux-gnu/libuuid.a
+          -DCMAKE_C_COMPILER=clang \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_CXX_FLAGS="-stdlib=libc++"
         cmake --build build-cmake
+
+    - name: Build glibc C23 compat shim
+      run: |
+        # System clang++ compiles against glibc 2.38+ which redirects
+        # strtoull→__isoc23_strtoull (C23) when _GNU_SOURCE is defined.
+        # leanc's bundled older glibc lacks these symbols, so we provide
+        # a shim compiled with leanc that forwards C23→regular versions.
+        leanc -c src/glibc_isoc23_compat.c -o build-cmake/glibc_isoc23_compat.o
 
     - name: Build Lean kernel
       run: lake build xlean

@@ -48,11 +48,15 @@ lean_exe xlean where
       -- All deps built from source via FetchContent; do NOT add system lib
       -- paths like -L/usr/lib/x86_64-linux-gnu because leanc uses --sysroot
       -- with its own bundled glibc, and system glibc conflicts (__libc_csu_init).
+      -- glibc_isoc23_compat.o provides __isoc23_strtoull etc. shims: system
+      -- clang++ compiles against glibc 2.38+ which redirects strtoull→C23
+      -- variants, but leanc's older glibc lacks them.
       #["-L./build-cmake/_deps/xeus-build",
         "-L./build-cmake/_deps/xeus-zmq-build",
         "-L./build-cmake/_deps/libzmq-build/lib",
         "-Wl,--start-group",
         "./build-cmake/libxeus_ffi.a",
+        "./build-cmake/glibc_isoc23_compat.o",
         "-lxeus", "-lxeus-zmq", "-lzmq",
         "-Wl,--end-group",
         "-lpthread", "-lm", "-ldl"]

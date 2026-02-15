@@ -1,0 +1,29 @@
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y \
+    cmake build-essential nlohmann-json3-dev \
+    uuid-dev libssl-dev python3 python3-pip \
+    clang libc++-dev libc++abi-dev \
+    curl git
+
+# Install Lean via elan
+RUN curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y --default-toolchain leanprover/lean4:v4.28.0-rc1
+ENV PATH="/root/.elan/bin:${PATH}"
+
+WORKDIR /app
+COPY . /app
+
+# Step 1: Build C++ FFI library with system clang++ -stdlib=libc++
+RUN cmake -S . -B build-cmake \
+      -DCMAKE_C_COMPILER=clang \
+      -DCMAKE_CXX_COMPILER=clang++ \
+      -DCMAKE_CXX_FLAGS="-stdlib=libc++" && \
+    cmake --build build-cmake
+
+# Step 2: Build glibc C23 compat shim with leanc
+RUN leanc -c src/glibc_isoc23_compat.c -o build-cmake/glibc_isoc23_compat.o
+
+# Step 3: Build Lean kernel
+RUN lake build xlean
+
+CMD ["bash"]
