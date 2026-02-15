@@ -26,8 +26,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y cmake build-essential nlohmann-json3-dev \
-          uuid-dev libssl-dev python3 python3-pip \
-          clang libc++-dev libc++abi-dev
+          uuid-dev libssl-dev python3 python3-pip
 
     - name: Install Lean via elan
       run: |
@@ -39,14 +38,18 @@ jobs:
 
     - name: Build C++ FFI library
       run: |
-        # Use system clang++ with -stdlib=libc++ so the FFI library's C++ ABI
-        # matches Lean's linker (which uses libc++, not libstdc++).
-        # Using leanc directly as cmake compiler breaks find_package for
-        # system libraries (LibUUID etc.) due to its custom sysroot.
+        # Use leanc (Lean's clang wrapper) so compiled code uses leanc's
+        # bundled glibc headers, matching the glibc leanc links against.
+        # System clang++ uses system glibc 2.39 headers which redirect
+        # strtoull→__isoc23_strtoull (C23), missing from leanc's older glibc.
+        # STATIC_LIBRARY skips link tests that fail with leanc's sysroot.
+        # LibUUID paths provided explicitly since leanc's sysroot hides them.
         cmake -S . -B build-cmake \
-          -DCMAKE_C_COMPILER=clang \
-          -DCMAKE_CXX_COMPILER=clang++ \
-          -DCMAKE_CXX_FLAGS="-stdlib=libc++"
+          -DCMAKE_C_COMPILER=leanc \
+          -DCMAKE_CXX_COMPILER=leanc \
+          -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+          -DLibUUID_INCLUDE_DIR=/usr/include \
+          -DLibUUID_LIBRARY=/usr/lib/x86_64-linux-gnu/libuuid.a
         cmake --build build-cmake
 
     - name: Build Lean kernel
