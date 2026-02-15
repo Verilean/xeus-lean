@@ -6,45 +6,43 @@ on:
   pull_request:
     branches: [ main, master ]
 
+# Allow only one concurrent deployment to GitHub Pages
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build-and-test:
+  # ============================================================
+  # Native build (Linux x86_64)
+  # ============================================================
+  native-build:
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Install system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake build-essential nlohmann-json3-dev libzmq3-dev uuid-dev libssl-dev python3 python3-pip
+        sudo apt-get install -y cmake build-essential nlohmann-json3-dev \
+          libzmq3-dev uuid-dev libssl-dev python3 python3-pip
 
     - name: Install Lean via elan
       run: |
         curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y
         echo "$HOME/.elan/bin" >> $GITHUB_PATH
 
-    - name: Install Jupyter client for testing
-      run: |
-        pip3 install jupyter-client
-
     - name: Verify Lean installation
-      run: |
-        source ~/.elan/env
-        lean --version
-        lake --version
+      run: lean --version && lake --version
 
     - name: Build C++ FFI library
       run: |
-        mkdir -p build-cmake
-        cd build-cmake
-        cmake ..
-        cmake --build .
+        cmake -S . -B build-cmake
+        cmake --build build-cmake
 
     - name: Build Lean kernel
-      run: |
-        source ~/.elan/env
-        lake build xlean
+      run: lake build xlean
 
     - name: Verify build artifacts
       run: |
@@ -52,32 +50,110 @@ jobs:
         ls -lh .lake/build/bin/xlean
         file .lake/build/bin/xlean
 
-    - name: Run tests
-      run: |
-        source ~/.elan/env
-        python3 test_clean_output.py || echo "Test failed or kernel not fully functional in CI"
-        python3 test_infix.py || echo "Test failed or kernel not fully functional in CI"
-      continue-on-error: true
-
-    - name: Upload build artifacts
-      uses: actions/upload-artifact@v3
+    - name: Upload native binary
+      uses: actions/upload-artifact@v4
       with:
-        name: xlean-binary
+        name: xlean-linux-x86_64
         path: .lake/build/bin/xlean
         retention-days: 7
 
-  docker-build:
+  # ============================================================
+  # WASM build (emscripten Memory64 via pixi)
+  # ============================================================
+  wasm-build:
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
-    - name: Build Docker image
+    - name: Install Lean via elan
       run: |
-        docker build -t xeus-lean:test .
+        curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y
+        echo "$HOME/.elan/bin" >> $GITHUB_PATH
 
-    - name: Test Docker build
+    - name: Install pixi
+      uses: prefix-dev/setup-pixi@v0.8.1
+      with:
+        pixi-version: v0.45.0
+
+    - name: Install pixi environments
       run: |
-        docker run --rm xeus-lean:test ls -lh /app/.lake/build/bin/xlean
-        docker run --rm xeus-lean:test file /app/.lake/build/bin/xlean
+        pixi install -e wasm-build --no-lockfile-update || pixi install -e wasm-build
+        pixi install -e wasm-host --no-lockfile-update || pixi install -e wasm-host
+
+    - name: Fix emscripten symlinks
+      run: pixi run -e wasm-build fix-emscripten-links || true
+
+    - name: Build Lean REPL (lake)
+      run: lake build WasmRepl
+
+    - name: Configure WASM build (emcmake)
+      run: |
+        pixi run -e wasm-build emcmake cmake -S . -B wasm-build \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ON
+
+    - name: Build WASM kernel (emmake)
+      run: |
+        pixi run -e wasm-build emmake make -C wasm-build -j$(nproc) xlean test_wasm_node
+
+    - name: Install WASM kernel
+      run: |
+        PREFIX=$(pixi info -e wasm-host --json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['environments_info'][0]['prefix'])" 2>/dev/null || echo ".pixi/envs/wasm-host")
+        cmake --install wasm-build --prefix "$PREFIX"
+
+    - name: Run WASM tests (test_wasm_node)
+      run: |
+        pixi run -e wasm-build node --experimental-wasm-memory64 wasm-build/test_wasm_node.js
+
+    - name: Build JupyterLite site
+      run: |
+        mkdir -p notebooks
+        PREFIX=$(pixi info -e wasm-host --json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['environments_info'][0]['prefix'])" 2>/dev/null || echo ".pixi/envs/wasm-host")
+        pixi run -e wasm-build jupyter lite build \
+          --XeusAddon.prefix="$PREFIX" \
+          "--XeusAddon.default_channels=[https://conda.anaconda.org/conda-forge]" \
+          --contents notebooks \
+          --output-dir _output \
+          --force
+
+    - name: Verify JupyterLite output
+      run: |
+        ls -lh _output/index.html
+        find _output -name "xlean*" | head -5
+        find _output -name "kernel.json" | head -5
+
+    - name: Upload JupyterLite site
+      uses: actions/upload-artifact@v4
+      with:
+        name: jupyterlite-site
+        path: _output/
+        retention-days: 7
+
+    - name: Upload Pages artifact
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: _output/
+
+  # ============================================================
+  # Deploy to GitHub Pages (main branch only)
+  # ============================================================
+  deploy-pages:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: wasm-build
+    runs-on: ubuntu-latest
+
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+    - name: Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v4

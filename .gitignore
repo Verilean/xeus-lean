@@ -1,8 +1,9 @@
 # Build artifacts
 build/
 build-cmake/
+wasm-build/
 .lake/
-repl/
+/repl/
 *.o
 *.a
 *.so
@@ -13,10 +14,11 @@ repl/
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
-Makefile
+/wasm-build/Makefile
 *.cmake
 !CMakeLists.txt
 !*Config.cmake.in
+!cmake/*.cmake
 
 # Executables
 xlean
@@ -46,6 +48,18 @@ test_repl.cpp
 xeus-haskell/
 a.txt
 log
+
+# WASM build / deploy output
+_output/
+dist/
+.jupyterlite.doit.db
+xeus-lean-jupyterlite.tar.gz
+.pixi/
+
+# Debug files
+DEBUG_WASM_STATUS.md
+debug_hash.cpp
+test_node.mjs
 
 # macOS
 .DS_Store

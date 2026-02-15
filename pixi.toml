@@ -1,0 +1,104 @@
+[workspace]
+authors = ["xeus-lean contributors"]
+channels = ["conda-forge"]
+name = "xeus-lean"
+version = "0.1.0"
+platforms = ["linux-64", "linux-aarch64", "osx-arm64"]
+
+[tasks]
+prebuild = """
+cmake
+  -S $PWD
+  -B build
+  -DCMAKE_BUILD_TYPE=Release
+  -DCMAKE_INSTALL_PREFIX="$CONDA_PREFIX"
+  -DCMAKE_PREFIX_PATH="$CONDA_PREFIX"
+  -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ON
+"""
+build = "cmake --build build --config Release"
+install = "cmake --install build --config Release"
+
+[dependencies]
+make = "*"
+cmake = "*"
+cxx-compiler = "*"
+xeus-zmq = ">=3.0.0,<4.0"
+nlohmann_json = "*"
+cppzmq = "*"
+
+#
+# wasm-build: Host platform toolchain for building WASM kernel
+#
+[feature.wasm-build]
+platforms = ["linux-64", "osx-arm64"]
+channels = ["https://repo.prefix.dev/emscripten-forge-dev", "conda-forge"]
+
+[feature.wasm-build.dependencies]
+cmake = "*"
+make = "*"
+c-compiler = "*"
+cxx-compiler = "*"
+jupyterlite = "*"
+jupyterlite-xeus = "*"
+jupyter_server = "*"
+emscripten_emscripten-wasm32 = "==3.1.73"
+
+[feature.wasm-build.tasks]
+fix-emscripten-links = """
+cd "$CONDA_PREFIX/__clobbers__/emscripten_emscripten-wasm32/bin" &&
+sh -c 'find . -type l -exec ln -sf ../../../opt/emsdk/upstream/bin/{} {} \\;'
+"""
+prebuild = """
+export PREFIX=$CONDA_PREFIX/../wasm-host;
+emcmake cmake
+  -S $PWD
+  -B wasm-build
+  -DCMAKE_BUILD_TYPE=Release
+  -DCMAKE_INSTALL_PREFIX="$PREFIX"
+  -DCMAKE_PREFIX_PATH="$PREFIX"
+  -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ON
+  -DCMAKE_C_FLAGS=""
+  -DCMAKE_CXX_FLAGS=""
+  -DCMAKE_EXE_LINKER_FLAGS=""
+  -DCMAKE_SHARED_LINKER_FLAGS=""
+  -DCMAKE_SYSTEM_NAME=Emscripten
+"""
+build = "emmake make -C wasm-build"
+install = "emmake make -C wasm-build install"
+serve = """
+export PREFIX=$CONDA_PREFIX/../wasm-host;
+jupyter lite serve
+  --XeusAddon.prefix="$PREFIX"
+  --XeusAddon.default_channels="['https://repo.prefix.dev/emscripten-forge-dev','https://conda.anaconda.org/conda-forge']"
+  --contents notebooks
+"""
+generate = """
+export PREFIX=$CONDA_PREFIX/../wasm-host;
+jupyter lite build
+  --XeusAddon.prefix="$PREFIX"
+  --XeusAddon.default_channels="['https://repo.prefix.dev/emscripten-forge-dev','https://conda.anaconda.org/conda-forge']"
+  --contents notebooks
+  --output-dir dist
+"""
+
+#
+# wasm-host: emscripten-wasm32 target platform dependencies
+#
+[feature.wasm-host]
+platforms = ["emscripten-wasm32"]
+channels = ["https://repo.prefix.dev/emscripten-forge-dev", "conda-forge"]
+
+[feature.wasm-host.dependencies]
+nlohmann_json = "*"
+xeus-lite = ">=3.0,<4.0"
+xeus = ">=5.0.0,<6.0"
+gmp = "*"
+
+[feature.wasm-host.tasks]
+
+#
+# Environments
+#
+[environments]
+wasm-build = { features = ["wasm-build"], no-default-feature = true }
+wasm-host = { features = ["wasm-host"], no-default-feature = true }

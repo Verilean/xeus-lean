@@ -10,6 +10,9 @@ lean_lib REPL where
 lean_lib ReplFFI where
   srcDir := "src"
 
+lean_lib WasmRepl where
+  srcDir := "src"
+
 lean_exe repl where
   root := `REPL.Main
   supportInterpreter := true
