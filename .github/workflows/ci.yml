@@ -112,6 +112,8 @@ jobs:
     - name: Build WASM kernel (emmake)
       run: |
         pixi run -e wasm-build emmake make -C wasm-build -j$(nproc) xlean test_wasm_node
+        echo "=== Checking if xlean binaries were built ==="
+        ls -lh wasm-build/xlean* || echo "No xlean binaries found in wasm-build"
 
     - name: Install WASM kernel
       run: |
@@ -141,6 +143,11 @@ jobs:
       run: |
         mkdir -p notebooks
         PREFIX=$(pixi info -e wasm-host --json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['environments_info'][0]['prefix'])" 2>/dev/null || echo ".pixi/envs/wasm-host")
+        echo "=== PREFIX before JupyterLite build: $PREFIX ==="
+        echo "=== Files in PREFIX/bin ==="
+        ls -lh "$PREFIX/bin/" | grep xlean || echo "No xlean in bin"
+        echo "=== Files in PREFIX/share/jupyter/kernels ==="
+        find "$PREFIX/share/jupyter/kernels" -type f -ls 2>/dev/null || echo "No kernels found"
         pixi run -e wasm-build jupyter lite build \
           --XeusAddon.prefix="$PREFIX" \
           "--XeusAddon.default_channels=[https://conda.anaconda.org/conda-forge]" \
@@ -157,11 +164,15 @@ jobs:
         find _output -name "kernel.json" -ls
         echo "=== Checking for xeus kernels ==="
         find _output -type d -name "*xeus*" -o -name "*kernel*" | head -20
-        echo "=== Contents of _output root ==="
-        ls -la _output/
+        echo "=== Contents of _output/xeus ==="
+        ls -laR _output/xeus/ | head -100
+        echo "=== Checking xeus/kernels.json ==="
+        if [ -f _output/xeus/kernels.json ]; then
+          cat _output/xeus/kernels.json
+        fi
         echo "=== Checking jupyter-lite.json ==="
         if [ -f _output/jupyter-lite.json ]; then
-          cat _output/jupyter-lite.json | python3 -m json.tool | head -50
+          cat _output/jupyter-lite.json | python3 -m json.tool | head -100
         fi
 
     - name: Upload JupyterLite site
