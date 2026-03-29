@@ -46,19 +46,28 @@ RUN node --experimental-wasm-memory64 wasm-build/test_wasm_node.js
 RUN PREFIX=$(pixi info -e wasm-host --json 2>/dev/null \
       | python3 -c "import sys,json; print(json.load(sys.stdin)['environments_info'][0]['prefix'])" \
       2>/dev/null || echo ".pixi/envs/wasm-host") && \
-    pixi run -e wasm-build cmake --install wasm-build --prefix "$PREFIX"
+    echo "=== Installing to PREFIX: $PREFIX ===" && \
+    pixi run -e wasm-build cmake --install wasm-build --prefix "$PREFIX" && \
+    echo "=== Verifying installation ===" && \
+    ls -lh "$PREFIX/bin/" | grep xlean && \
+    ls -lh "$PREFIX/share/jupyter/kernels/xlean/" && \
+    cat "$PREFIX/share/jupyter/kernels/xlean/kernel.json"
 
 # 6. Generate JupyterLite static site
 RUN mkdir -p notebooks && \
     PREFIX=$(pixi info -e wasm-host --json 2>/dev/null \
       | python3 -c "import sys,json; print(json.load(sys.stdin)['environments_info'][0]['prefix'])" \
       2>/dev/null || echo ".pixi/envs/wasm-host") && \
+    echo "=== Building JupyterLite with PREFIX: $PREFIX ===" && \
     pixi run -e wasm-build jupyter lite build \
       --XeusAddon.prefix="$PREFIX" \
       "--XeusAddon.default_channels=[https://conda.anaconda.org/conda-forge]" \
       --contents notebooks \
       --output-dir _output \
-      --force
+      --force && \
+    echo "=== Verifying JupyterLite output ===" && \
+    find _output -name "xlean*" -ls && \
+    cat _output/xeus/kernels.json
 
 # --- Serve stage ---
 FROM python:3.12-slim
