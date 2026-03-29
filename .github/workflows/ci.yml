@@ -168,12 +168,23 @@ jobs:
     permissions:
       pages: write
       id-token: write
+      contents: read
 
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
+    - name: Configure GitHub Pages
+      run: |
+        echo "Deploying to GitHub Pages"
+        echo "Repository: ${{ github.repository }}"
+        echo "Ensure GitHub Pages is enabled at:"
+        echo "https://github.com/${{ github.repository }}/settings/pages"
+        echo "Source should be set to: GitHub Actions"
+
     - name: Deploy to GitHub Pages
       id: deployment
       uses: actions/deploy-pages@v4
+      with:
+        timeout: 600000
