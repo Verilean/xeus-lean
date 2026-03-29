@@ -116,7 +116,17 @@ jobs:
     - name: Install WASM kernel
       run: |
         PREFIX=$(pixi info -e wasm-host --json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['environments_info'][0]['prefix'])" 2>/dev/null || echo ".pixi/envs/wasm-host")
+        echo "Installing to PREFIX: $PREFIX"
         cmake --install wasm-build --prefix "$PREFIX"
+        echo "Verifying kernel installation:"
+        ls -lh "$PREFIX/bin/" | grep xlean || echo "No xlean files in bin/"
+        ls -lh "$PREFIX/share/jupyter/kernels/" || echo "No kernels directory"
+        if [ -d "$PREFIX/share/jupyter/kernels/xlean" ]; then
+          echo "Contents of kernel directory:"
+          ls -lha "$PREFIX/share/jupyter/kernels/xlean/"
+          echo "kernel.json contents:"
+          cat "$PREFIX/share/jupyter/kernels/xlean/kernel.json"
+        fi
 
     - name: Setup Node.js 23+ for WASM Memory64 tests
       uses: actions/setup-node@v4
@@ -141,8 +151,18 @@ jobs:
     - name: Verify JupyterLite output
       run: |
         ls -lh _output/index.html
-        find _output -name "xlean*" | head -5
-        find _output -name "kernel.json" | head -5
+        echo "=== Searching for xlean files in _output ==="
+        find _output -name "xlean*" -ls | head -20
+        echo "=== Searching for kernel.json files in _output ==="
+        find _output -name "kernel.json" -ls
+        echo "=== Checking for xeus kernels ==="
+        find _output -type d -name "*xeus*" -o -name "*kernel*" | head -20
+        echo "=== Contents of _output root ==="
+        ls -la _output/
+        echo "=== Checking jupyter-lite.json ==="
+        if [ -f _output/jupyter-lite.json ]; then
+          cat _output/jupyter-lite.json | python3 -m json.tool | head -50
+        fi
 
     - name: Upload JupyterLite site
       uses: actions/upload-artifact@v4
