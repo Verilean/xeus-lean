@@ -21,8 +21,8 @@ cmake_install.cmake
 !cmake/*.cmake
 
 # Executables
-xlean
-test_basic
+/xlean
+/test_basic
 
 # IDE
 .vscode/
@@ -36,7 +36,6 @@ test_basic
 *.ipynb
 
 # Generated files
-share/jupyter/kernels/xlean/kernel.json
 test_connection.json
 *.json.bak
 *.toml.bak
