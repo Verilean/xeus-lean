@@ -8,7 +8,7 @@ pkgs.mkShell {
     pkg-config
     cmake
     elan
-    (python311.withPackages (ps: with ps; [
+    (python3.withPackages (ps: with ps; [
       numpy
       matplotlib
       pyyaml
@@ -17,7 +17,7 @@ pkgs.mkShell {
       jupyter
       jupyterlab
     ]))
-    nodejs_23
+    nodejs
     emscripten
     # Additional build dependencies
     nlohmann_json
@@ -25,7 +25,7 @@ pkgs.mkShell {
     openssl
     clang
     libcxx
-    libcxxabi
+    libcxxrt
   ];
 
   # Environment variables

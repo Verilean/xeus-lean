@@ -120,6 +120,23 @@ jobs:
         PREFIX=$(pixi info -e wasm-host --json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['environments_info'][0]['prefix'])" 2>/dev/null || echo ".pixi/envs/wasm-host")
         echo "Installing to PREFIX: $PREFIX"
         cmake --install wasm-build --prefix "$PREFIX"
+
+        # Rewrite kernel.json to use absolute path so jupyterlite-xeus can
+        # find xlean.js and xlean.wasm via Path(argv[0] + ".js"/".wasm").
+        # The installed binaries are at $PREFIX/bin/xlean.{js,wasm}.
+        ABS_PREFIX=$(realpath "$PREFIX")
+        KERNEL_JSON="$PREFIX/share/jupyter/kernels/xlean/kernel.json"
+        python3 -c "
+        import json
+        p = '$KERNEL_JSON'
+        with open(p) as f:
+            spec = json.load(f)
+        spec['argv'] = ['$ABS_PREFIX/bin/xlean']
+        with open(p, 'w') as f:
+            json.dump(spec, f, indent=2)
+        print('Updated kernel.json:', json.dumps(spec, indent=2))
+        "
+
         echo "Verifying kernel installation:"
         ls -lh "$PREFIX/bin/" | grep xlean || echo "No xlean files in bin/"
         ls -lh "$PREFIX/share/jupyter/kernels/" || echo "No kernels directory"
@@ -129,6 +146,8 @@ jobs:
           echo "kernel.json contents:"
           cat "$PREFIX/share/jupyter/kernels/xlean/kernel.json"
         fi
+        echo "Verifying xlean.js and xlean.wasm exist at absolute path:"
+        ls -lh "$ABS_PREFIX/bin/xlean.js" "$ABS_PREFIX/bin/xlean.wasm"
 
     - name: Setup Node.js 23+ for WASM Memory64 tests
       uses: actions/setup-node@v4
