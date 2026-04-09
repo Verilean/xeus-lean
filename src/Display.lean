@@ -1,8 +1,11 @@
 /-
 Copyright (c) 2025, xeus-lean contributors
 Released under Apache 2.0 license as described in the file LICENSE.
+-/
+import Lean.Elab.Command
 
-Rich display support for the xeus-lean Jupyter kernel.
+/-!
+# Rich display support for the xeus-lean Jupyter kernel
 
 This module provides functions and commands for emitting MIME-typed
 output (HTML, LaTeX, Markdown, SVG, JSON) that the C++ interpreter
@@ -76,47 +79,21 @@ end Display
 
 /-! ## Sugar commands
 
-These `#html` / `#latex` / `#md` / `#svg` macros expand to
+These `#html` / `#latex` / `#md` / `#svg` / `#json` commands expand to
 `#eval Display.<kind> <string-literal>`. They keep notebook cells
 short and visually distinct from ordinary `#eval`. -/
 
-open Lean in
-syntax (name := dispHtmlCmd) "#html " str : command
-open Lean in
-syntax (name := dispLatexCmd) "#latex " str : command
-open Lean in
-syntax (name := dispMdCmd) "#md " str : command
-open Lean in
-syntax (name := dispSvgCmd) "#svg " str : command
-open Lean in
-syntax (name := dispJsonCmd) "#json " str : command
+/-- Display an HTML string. Expands to `#eval Display.html s`. -/
+macro "#html " s:str : command => `(#eval Display.html $s)
 
-open Lean Elab Command in
-@[command_elab dispHtmlCmd]
-def elabDispHtml : CommandElab := fun stx => match stx with
-  | `(#html $s:str) => elabCommand (← `(#eval Display.html $s))
-  | _ => Elab.throwUnsupportedSyntax
+/-- Display a LaTeX math expression. Expands to `#eval Display.latex s`. -/
+macro "#latex " s:str : command => `(#eval Display.latex $s)
 
-open Lean Elab Command in
-@[command_elab dispLatexCmd]
-def elabDispLatex : CommandElab := fun stx => match stx with
-  | `(#latex $s:str) => elabCommand (← `(#eval Display.latex $s))
-  | _ => Elab.throwUnsupportedSyntax
+/-- Display a Markdown document. Expands to `#eval Display.markdown s`. -/
+macro "#md " s:str : command => `(#eval Display.markdown $s)
 
-open Lean Elab Command in
-@[command_elab dispMdCmd]
-def elabDispMd : CommandElab := fun stx => match stx with
-  | `(#md $s:str) => elabCommand (← `(#eval Display.markdown $s))
-  | _ => Elab.throwUnsupportedSyntax
+/-- Display an SVG image. Expands to `#eval Display.svg s`. -/
+macro "#svg " s:str : command => `(#eval Display.svg $s)
 
-open Lean Elab Command in
-@[command_elab dispSvgCmd]
-def elabDispSvg : CommandElab := fun stx => match stx with
-  | `(#svg $s:str) => elabCommand (← `(#eval Display.svg $s))
-  | _ => Elab.throwUnsupportedSyntax
-
-open Lean Elab Command in
-@[command_elab dispJsonCmd]
-def elabDispJson : CommandElab := fun stx => match stx with
-  | `(#json $s:str) => elabCommand (← `(#eval Display.json $s))
-  | _ => Elab.throwUnsupportedSyntax
+/-- Display a JSON payload. Expands to `#eval Display.json s`. -/
+macro "#json " s:str : command => `(#eval Display.json $s)
