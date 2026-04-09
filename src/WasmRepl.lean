@@ -7,6 +7,10 @@ These functions are called from C++ via @[export] attributes.
 -/
 import REPL.Main
 import Lean.Data.Json
+-- Import Display so that #html / #latex / #md / #svg commands and the
+-- Display.html / Display.latex / ... helpers are available in REPL cells
+-- without an explicit import.
+import Display
 
 namespace WasmRepl
 

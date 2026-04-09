@@ -34,6 +34,8 @@ cmake_install.cmake
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb
+# But keep example notebooks shipped with the kernel.
+!notebooks/*.ipynb
 
 # Generated files
 test_connection.json
