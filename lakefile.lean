@@ -10,6 +10,12 @@ lean_lib REPL where
 lean_lib ReplFFI where
   srcDir := "src"
 
+-- Display.lean provides the #html / #latex / #md / #svg rich-display
+-- commands. It is declared as its own lib so that `import Display` from
+-- WasmRepl.lean (and user cells) resolves to src/Display.lean.
+lean_lib Display where
+  srcDir := "src"
+
 lean_lib WasmRepl where
   srcDir := "src"
 
