@@ -1,7 +1,8 @@
 FROM ghcr.io/prefix-dev/pixi:latest AS builder
 
-# Install curl, git for elan, and xz-utils for node binary
-RUN apt-get update && apt-get install -y curl git xz-utils && rm -rf /var/lib/apt/lists/*
+# Install curl, git for elan, xz-utils for node binary, and python3
+# for the pixi-prefix discovery and kernel.json rewrite steps.
+RUN apt-get update && apt-get install -y curl git xz-utils python3 && rm -rf /var/lib/apt/lists/*
 
 # Install Lean via elan
 RUN curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y
@@ -25,7 +26,9 @@ RUN pixi install -e wasm-host || pixi install -e wasm-host --no-lockfile-update
 COPY . .
 
 # Build Lean REPL (generates .c files needed by cmake)
-RUN lake build REPL WasmRepl
+# Display is a separate lib providing #html/#latex/#md/#svg commands;
+# it must be built before WasmRepl because WasmRepl.lean imports it.
+RUN lake build REPL Display WasmRepl
 
 # Build WASM kernel
 # 1. Fix emscripten symlinks
@@ -42,12 +45,20 @@ RUN pixi run -e wasm-build emmake make -C wasm-build -j$(nproc) xlean test_wasm_
 # 4. Run WASM tests with system Node.js 23+
 RUN node --experimental-wasm-memory64 wasm-build/test_wasm_node.js
 
-# 5. Install to wasm-host prefix
+# 5. Install to wasm-host prefix and rewrite kernel.json argv to
+#    an absolute path (jupyterlite-xeus reads argv[0] verbatim and
+#    appends .js/.wasm to locate the kernel binaries).
 RUN PREFIX=$(pixi info -e wasm-host --json 2>/dev/null \
       | python3 -c "import sys,json; print(json.load(sys.stdin)['environments_info'][0]['prefix'])" \
       2>/dev/null || echo ".pixi/envs/wasm-host") && \
     echo "=== Installing to PREFIX: $PREFIX ===" && \
     pixi run -e wasm-build cmake --install wasm-build --prefix "$PREFIX" && \
+    ABS_PREFIX=$(realpath "$PREFIX") && \
+    python3 -c "import json,pathlib; \
+p=pathlib.Path('$PREFIX/share/jupyter/kernels/xlean/kernel.json'); \
+spec=json.loads(p.read_text()); \
+spec['argv']=['$ABS_PREFIX/bin/xlean']; \
+p.write_text(json.dumps(spec, indent=2))" && \
     echo "=== Verifying installation ===" && \
     ls -lh "$PREFIX/bin/" | grep xlean && \
     ls -lh "$PREFIX/share/jupyter/kernels/xlean/" && \

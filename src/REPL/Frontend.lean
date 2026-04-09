@@ -81,6 +81,11 @@ def processInput (input : String) (cmdState? : Option Command.State)
   IO.eprintln "[processInput] initSearchPath done"
   enableInitializersExecution
   let fileName   := fileName.getD "<input>"
+  -- Prepend `import Display` so that #html/#latex/#md/#svg/#json
+  -- macros and Display.* helpers are available without the user
+  -- explicitly importing them. The Display.olean must be embedded
+  -- in the WASM VFS alongside Init.olean for this to work.
+  let input := if cmdState?.isNone then "import Display\n" ++ input else input
   let inputCtx   := Parser.mkInputContext input fileName
 
   match cmdState? with

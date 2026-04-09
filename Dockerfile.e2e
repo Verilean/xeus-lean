@@ -1,0 +1,50 @@
+# End-to-end test image for xeus-lean.
+#
+# Reuses the WASM build from Dockerfile.wasm (via docker compose or
+# docker build --target), then layers Playwright + Chromium on top
+# so the JupyterLite deployment can be exercised from a real
+# headless browser.
+#
+# Usage:
+#
+#     docker build -f Dockerfile.wasm -t xeus-lean-wasm-builder --target builder .
+#     docker build -f Dockerfile.e2e  -t xeus-lean-e2e .
+#     docker run --rm xeus-lean-e2e
+#
+# Or via make: `make docker-e2e` (see Makefile).
+#
+# The base image ships a matching browser bundle — no NixOS runtime
+# linking headaches and no `npx playwright install` at runtime.
+
+FROM xeus-lean-wasm-builder AS wasm-output
+# Intermediate alias so the COPY below can refer to the already-built
+# image by name without re-running the heavy WASM build.
+
+FROM mcr.microsoft.com/playwright:v1.56.0-jammy AS test
+
+# Python3 is used to serve the static site (`python3 -m http.server`).
+# The Playwright base image already ships python3, so we don't
+# apt-install it — that saved ~5 minutes of `apt-get update` per
+# rebuild during development. Verify instead.
+RUN python3 --version
+
+WORKDIR /work
+
+# Pull in only the files we need for the test: the built JupyterLite
+# site and the Playwright project.
+COPY --from=wasm-output /opt/xeus-lean/_output /work/_output
+COPY tests/e2e /work/tests/e2e
+
+# Install test dependencies. The Playwright image already has the
+# browsers under PLAYWRIGHT_BROWSERS_PATH, so we only need the npm
+# packages here.
+WORKDIR /work/tests/e2e
+RUN npm ci || npm install
+
+# The playwright.config.ts looks for _output at ../../_output
+# (relative to tests/e2e), which resolves to /work/_output here.
+# That matches what we COPY'd above, so no path juggling needed.
+
+# Default command: run the full test suite. Overridable so you can
+# do e.g. `docker run xeus-lean-e2e npx playwright test --grep html`.
+CMD ["npx", "playwright", "test"]

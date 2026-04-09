@@ -265,6 +265,18 @@ if(EMSCRIPTEN)
                 PUBLIC "SHELL: --embed-file ${LEAN_OLEAN_STAGING_ROOT}@/")
 
             message(STATUS "Init .olean files will be embedded in WASM filesystem at /lib/lean/")
+
+            # Also embed Display.olean (from the project's .lake build)
+            # so that the REPL can `import Display` at runtime. This makes
+            # #html / #latex / #md / #svg / #json commands available to
+            # user cells without an explicit import.
+            set(DISPLAY_OLEAN_SRC "${CMAKE_SOURCE_DIR}/.lake/build/lib/lean")
+            foreach(_ext olean olean.server olean.private ir)
+                if(EXISTS "${DISPLAY_OLEAN_SRC}/Display.${_ext}")
+                    file(COPY "${DISPLAY_OLEAN_SRC}/Display.${_ext}" DESTINATION "${LEAN_OLEAN_STAGING}/")
+                    message(STATUS "Embedding Display.${_ext} in WASM VFS")
+                endif()
+            endforeach()
         else()
             message(WARNING "Init.olean not found at ${LEAN_OLEAN_SRC}/Init.olean - WASM kernel will have no Init module")
         endif()
