@@ -25,6 +25,75 @@
 namespace xeus_lean
 {
 
+// ---------------------------------------------------------------------------
+// Rich-display marker parsing
+//
+// Lean cells emit MIME-typed payloads via Display.html/latex/md/svg/json.
+// Each payload is encoded as:
+//
+//     \x1bMIME:<mime-type>\x1e<content>\x1b/MIME\x1e
+//
+// where \x1b is ESC (0x1B) and \x1e is RS (0x1E). ESC does not appear in
+// ordinary Lean output, so it is safe as a sentinel. The content may span
+// multiple lines.
+//
+// `extract_mime_payloads` walks `text` and pulls out every well-formed
+// payload, accumulating them into `bundle` (a JSON object keyed by mime
+// type). Anything outside payloads is appended to `plain_out` so we don't
+// drop ordinary `IO.println` output.
+//
+// If the same mime type appears more than once in a single cell, later
+// payloads overwrite earlier ones — this matches how Jupyter renders a
+// single display_data message: one bundle, one entry per mime type.
+// ---------------------------------------------------------------------------
+static void extract_mime_payloads(const std::string& text,
+                                  nl::json& bundle,
+                                  std::string& plain_out)
+{
+    static const std::string OPEN_PREFIX = "\x1b" "MIME:";
+    static const std::string CLOSE_MARK  = "\x1b" "/MIME" "\x1e";
+    static const char RS = '\x1e';
+
+    std::size_t cursor = 0;
+    while (cursor < text.size()) {
+        std::size_t open = text.find(OPEN_PREFIX, cursor);
+        if (open == std::string::npos) {
+            plain_out.append(text, cursor, std::string::npos);
+            return;
+        }
+        // Anything before the opening marker is plain text.
+        plain_out.append(text, cursor, open - cursor);
+
+        std::size_t mime_start = open + OPEN_PREFIX.size();
+        std::size_t rs_pos = text.find(RS, mime_start);
+        if (rs_pos == std::string::npos) {
+            // Malformed marker — emit the rest as plain text and stop.
+            plain_out.append(text, open, std::string::npos);
+            return;
+        }
+        std::string mime_type = text.substr(mime_start, rs_pos - mime_start);
+
+        std::size_t content_start = rs_pos + 1;
+        std::size_t close_pos = text.find(CLOSE_MARK, content_start);
+        if (close_pos == std::string::npos) {
+            // Missing close marker — bail out as plain text.
+            plain_out.append(text, open, std::string::npos);
+            return;
+        }
+        std::string content = text.substr(content_start, close_pos - content_start);
+
+        bundle[mime_type] = content;
+        cursor = close_pos + CLOSE_MARK.size();
+    }
+}
+
+// Trim a single trailing newline (added by IO.println) from a payload.
+static void rstrip_one_newline(std::string& s)
+{
+    if (!s.empty() && s.back() == '\n') s.pop_back();
+}
+
+
 // Diagnostic: test that hash tables work in wasm64
 static void test_hash_tables() {
     std::cerr << "[WASM] test_hash_tables: sizeof(size_t)=" << sizeof(size_t)
@@ -275,6 +344,7 @@ void interpreter::execute_request_impl(send_reply_callback cb,
 
         // Format output
         nl::json pub_data;
+        nl::json mime_bundle = nl::json::object();
         if (result.contains("messages")) {
             auto& messages = result["messages"];
             bool has_errors = false;
@@ -286,8 +356,15 @@ void interpreter::execute_request_impl(send_reply_callback cb,
                     has_errors = true;
                 }
                 if (severity == "info") {
-                    if (!info_output.empty()) info_output += "\n";
-                    info_output += msg.value("data", "");
+                    // Pull MIME-typed payloads (Display.html, etc.) out of
+                    // the message text. Whatever is left is plain text.
+                    std::string raw = msg.value("data", "");
+                    std::string plain;
+                    extract_mime_payloads(raw, mime_bundle, plain);
+                    if (!plain.empty()) {
+                        if (!info_output.empty()) info_output += "\n";
+                        info_output += plain;
+                    }
                 }
             }
 
@@ -298,7 +375,25 @@ void interpreter::execute_request_impl(send_reply_callback cb,
             }
         }
 
-        if (!pub_data.empty()) {
+        // Publish rich-display payloads first so they appear above the
+        // plain-text result in the notebook (matches IPython ordering).
+        if (!mime_bundle.empty()) {
+            // Strip the trailing newline IO.println adds — important for
+            // text/latex where MathJax dislikes the extra whitespace.
+            for (auto it = mime_bundle.begin(); it != mime_bundle.end(); ++it) {
+                if (it->is_string()) {
+                    std::string v = it->get<std::string>();
+                    rstrip_one_newline(v);
+                    *it = v;
+                }
+            }
+            // Always include a text/plain fallback so non-rich frontends
+            // (and the notebook's text-only view) still show something.
+            if (!mime_bundle.contains("text/plain")) {
+                mime_bundle["text/plain"] = "[rich display]";
+            }
+            publish_execution_result(execution_counter, std::move(mime_bundle), nl::json::object());
+        } else if (!pub_data.empty()) {
             publish_execution_result(execution_counter, std::move(pub_data), nl::json::object());
         }
 
