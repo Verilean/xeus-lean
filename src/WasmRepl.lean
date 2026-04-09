@@ -60,9 +60,27 @@ def execute (stateRef : IO.Ref REPL.State) (code : String) (envId : UInt32) (has
   let result ← runCommand cmd |>.run state
   IO.eprintln "[WasmRepl] runCommand returned"
 
+  -- Drain the Display buffer. Display.html/latex/... append MIME
+  -- markers to a global IO.Ref rather than printing to stdout,
+  -- because Lean 4.28's #eval stdout capture (withIsolatedStreams)
+  -- does not work in WASM.
+  let displayOutput ← Display.drain
+  IO.eprintln s!"[WasmRepl] displayOutput='{displayOutput.take 200}' len={displayOutput.length}"
+
   match result with
   | (.inl response, newState) =>
     stateRef.set newState
+    -- If there was rich-display output, inject it as an additional
+    -- info message. The C++ interpreter will parse MIME markers out.
+    let response := if displayOutput.trim.isEmpty then response
+      else
+        let displayMsg : REPL.Message := {
+          pos := ⟨0, 0⟩
+          endPos := none
+          severity := .info
+          data := displayOutput.trim
+        }
+        { response with messages := response.messages ++ [displayMsg] }
     let json := Lean.toJson response
     IO.eprintln s!"[WasmRepl] success (full): {json.pretty}"
     let jsonStr := json.compress
