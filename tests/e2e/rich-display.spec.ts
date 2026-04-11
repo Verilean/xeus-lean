@@ -94,10 +94,7 @@ test.describe.serial('rich display', () => {
  * imports in the initial header). Loading 26 Sparkle modules takes
  * extra time.
  */
-// Sparkle requires `import Lean` which adds ~1.1GB of .olean files
-// to the WASM binary, exceeding browser WASM size limits. Sparkle
-// works in native Jupyter (see examples/sparkle/) but not JupyterLite.
-test.describe.skip('sparkle hdl (requires native kernel)', () => {
+test.describe.serial('sparkle hdl', () => {
   let sparklePage: Page;
 
   test.beforeAll(async ({ browser }) => {

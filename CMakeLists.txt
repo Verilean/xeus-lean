@@ -236,65 +236,81 @@ if(EMSCRIPTEN)
             #   .ir             = IR data (needed for interpretation/elaboration)
             file(MAKE_DIRECTORY "${LEAN_OLEAN_STAGING}")
 
-            # Copy top-level Init files
-            foreach(_ext olean olean.server olean.private ir)
+            # Copy top-level Init files (.olean + .olean.private only)
+            # .server and .ir are excluded to reduce size (~356MB -> ~220MB)
+            foreach(_ext olean olean.private)
                 if(EXISTS "${LEAN_OLEAN_SRC}/Init.${_ext}")
                     file(COPY "${LEAN_OLEAN_SRC}/Init.${_ext}" DESTINATION "${LEAN_OLEAN_STAGING}/")
                 endif()
             endforeach()
 
-            # Copy all Init/**/* files preserving directory structure
+            # Copy all Init/**/* .olean + .olean.private files
             file(GLOB_RECURSE _INIT_FILES
                 RELATIVE "${LEAN_OLEAN_SRC}"
                 "${LEAN_OLEAN_SRC}/Init/*.olean"
-                "${LEAN_OLEAN_SRC}/Init/*.olean.server"
-                "${LEAN_OLEAN_SRC}/Init/*.olean.private"
-                "${LEAN_OLEAN_SRC}/Init/*.ir")
+                "${LEAN_OLEAN_SRC}/Init/*.olean.private")
+            list(FILTER _INIT_FILES EXCLUDE REGEX "\\.server$")
             list(LENGTH _INIT_FILES _file_count)
-            message(STATUS "Copying ${_file_count} Init module files to staging")
+            message(STATUS "Copying ${_file_count} Init .olean+.private files to staging")
             foreach(_f ${_INIT_FILES})
                 get_filename_component(_dir "${_f}" DIRECTORY)
                 file(MAKE_DIRECTORY "${LEAN_OLEAN_STAGING}/${_dir}")
                 file(COPY "${LEAN_OLEAN_SRC}/${_f}" DESTINATION "${LEAN_OLEAN_STAGING}/${_dir}/")
             endforeach()
 
-            # Embed via emscripten --embed-file (data baked into JS, no separate fetch)
-            # Maps staging/lib/lean/* -> /lib/lean/* in WASM VFS
+            # Use --preload-file to keep .olean data in a separate xlean.data
+            # file fetched at runtime. --embed-file bakes data into JS which
+            # exceeds the 1GB WebAssembly.instantiate() limit when all modules
+            # (Init+Std+Lean+Sparkle ~807MB) are included.
             set(LEAN_OLEAN_STAGING_ROOT "${CMAKE_BINARY_DIR}/olean_staging")
             target_link_options(xlean
-                PUBLIC "SHELL: --embed-file ${LEAN_OLEAN_STAGING_ROOT}@/")
+                PUBLIC "SHELL: --preload-file ${LEAN_OLEAN_STAGING_ROOT}@/")
 
             message(STATUS "Init .olean files will be embedded in WASM filesystem at /lib/lean/")
 
             # Also embed Std module artifacts (needed by Sparkle and
             # other libraries that depend on Std.Data.HashMap etc.)
+            # Embed Std .olean + .olean.private (not .server/.ir)
             if(EXISTS "${LEAN_OLEAN_SRC}/Std.olean")
-                foreach(_ext olean olean.server olean.private ir)
+                foreach(_ext olean olean.private)
                     if(EXISTS "${LEAN_OLEAN_SRC}/Std.${_ext}")
                         file(COPY "${LEAN_OLEAN_SRC}/Std.${_ext}" DESTINATION "${LEAN_OLEAN_STAGING}/")
                     endif()
                 endforeach()
-                file(GLOB_RECURSE _STD_FILES
+                file(GLOB_RECURSE _STD_OLEAN_FILES
                     RELATIVE "${LEAN_OLEAN_SRC}"
                     "${LEAN_OLEAN_SRC}/Std/*.olean"
-                    "${LEAN_OLEAN_SRC}/Std/*.olean.server"
-                    "${LEAN_OLEAN_SRC}/Std/*.olean.private"
-                    "${LEAN_OLEAN_SRC}/Std/*.ir")
-                list(LENGTH _STD_FILES _std_count)
-                message(STATUS "Copying ${_std_count} Std module files to staging")
-                foreach(_f ${_STD_FILES})
+                    "${LEAN_OLEAN_SRC}/Std/*.olean.private")
+                list(FILTER _STD_OLEAN_FILES EXCLUDE REGEX "\\.server$")
+                list(LENGTH _STD_OLEAN_FILES _std_count)
+                message(STATUS "Copying ${_std_count} Std .olean+.private files to staging (~242MB)")
+                foreach(_f ${_STD_OLEAN_FILES})
                     get_filename_component(_dir "${_f}" DIRECTORY)
                     file(MAKE_DIRECTORY "${LEAN_OLEAN_STAGING}/${_dir}")
                     file(COPY "${LEAN_OLEAN_SRC}/${_f}" DESTINATION "${LEAN_OLEAN_STAGING}/${_dir}/")
                 endforeach()
-                message(STATUS "Std .olean files will be embedded in WASM filesystem")
             endif()
 
-            # Note: Lean module .olean files (Lean.Data, Lean.Elab, etc.)
-            # are NOT embedded because they add ~1.1GB to the WASM binary,
-            # exceeding browser/Node.js WASM size limits (~1GB). Libraries
-            # that `import Lean` (like Sparkle) cannot run in JupyterLite
-            # until a lighter dependency strategy is developed.
+            # Embed Lean .olean + .olean.private (not .server/.ir)
+            if(EXISTS "${LEAN_OLEAN_SRC}/Lean.olean")
+                foreach(_ext olean olean.private)
+                    if(EXISTS "${LEAN_OLEAN_SRC}/Lean.${_ext}")
+                        file(COPY "${LEAN_OLEAN_SRC}/Lean.${_ext}" DESTINATION "${LEAN_OLEAN_STAGING}/")
+                    endif()
+                endforeach()
+                file(GLOB_RECURSE _LEAN_OLEAN_FILES
+                    RELATIVE "${LEAN_OLEAN_SRC}"
+                    "${LEAN_OLEAN_SRC}/Lean/*.olean"
+                    "${LEAN_OLEAN_SRC}/Lean/*.olean.private")
+                list(FILTER _LEAN_OLEAN_FILES EXCLUDE REGEX "\\.server$")
+                list(LENGTH _LEAN_OLEAN_FILES _lean_count)
+                message(STATUS "Copying ${_lean_count} Lean .olean+.private files to staging (~322MB)")
+                foreach(_f ${_LEAN_OLEAN_FILES})
+                    get_filename_component(_dir "${_f}" DIRECTORY)
+                    file(MAKE_DIRECTORY "${LEAN_OLEAN_STAGING}/${_dir}")
+                    file(COPY "${LEAN_OLEAN_SRC}/${_f}" DESTINATION "${LEAN_OLEAN_STAGING}/${_dir}/")
+                endforeach()
+            endif()
 
             # Also embed Display.olean (from the project's .lake build)
             # so that the REPL can `import Display` at runtime. This makes
@@ -388,10 +404,28 @@ if(EMSCRIPTEN)
         "SHELL: -sEXPORT_ALL=1"
         "SHELL: --profiling-funcs"
     )
-    # Embed olean files for Init module loading
-    if(LEAN_TOOLCHAIN_DIR AND EXISTS "${LEAN_OLEAN_STAGING}")
+    # test_wasm_node only needs Init .olean files (not Std/Lean/Sparkle).
+    # Create a minimal staging with Init only to keep the binary small.
+    if(LEAN_TOOLCHAIN_DIR AND EXISTS "${LEAN_OLEAN_SRC}/Init.olean")
+        set(TEST_OLEAN_STAGING "${CMAKE_BINARY_DIR}/test_olean_staging/lib/lean")
+        file(MAKE_DIRECTORY "${TEST_OLEAN_STAGING}")
+        foreach(_ext olean olean.private)
+            if(EXISTS "${LEAN_OLEAN_SRC}/Init.${_ext}")
+                file(COPY "${LEAN_OLEAN_SRC}/Init.${_ext}" DESTINATION "${TEST_OLEAN_STAGING}/")
+            endif()
+        endforeach()
+        file(GLOB_RECURSE _TEST_INIT_FILES
+            RELATIVE "${LEAN_OLEAN_SRC}"
+            "${LEAN_OLEAN_SRC}/Init/*.olean"
+            "${LEAN_OLEAN_SRC}/Init/*.olean.private")
+        list(FILTER _TEST_INIT_FILES EXCLUDE REGEX "\\.server$")
+        foreach(_f ${_TEST_INIT_FILES})
+            get_filename_component(_dir "${_f}" DIRECTORY)
+            file(MAKE_DIRECTORY "${TEST_OLEAN_STAGING}/${_dir}")
+            file(COPY "${LEAN_OLEAN_SRC}/${_f}" DESTINATION "${TEST_OLEAN_STAGING}/${_dir}/")
+        endforeach()
         target_link_options(test_wasm_node
-            PUBLIC "SHELL: --embed-file ${CMAKE_BINARY_DIR}/olean_staging@/")
+            PUBLIC "SHELL: --embed-file ${CMAKE_BINARY_DIR}/test_olean_staging@/")
     endif()
 
     # Installation
@@ -406,7 +440,11 @@ if(EMSCRIPTEN)
             "$<TARGET_FILE_DIR:xlean>/xlean.wasm"
             DESTINATION ${CMAKE_INSTALL_BINDIR})
 
-    # Note: .olean files are embedded in xlean.js via --embed-file, no separate .data file
+    # --preload-file generates xlean.data containing all .olean files.
+    # It must be served alongside xlean.js for the VFS to work.
+    install(FILES "$<TARGET_FILE_DIR:xlean>/xlean.data"
+            DESTINATION ${CMAKE_INSTALL_BINDIR}
+            OPTIONAL)
 
     # Install kernel spec
     set(XJUPYTER_DATA_DIR "share/jupyter" CACHE STRING "Jupyter data directory")
