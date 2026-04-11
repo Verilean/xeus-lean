@@ -435,16 +435,16 @@ nl::json interpreter::kernel_info_request_impl()
 {
     std::cerr << "[WASM] kernel_info_request_impl: ENTER" << std::endl;
     return xeus::create_info_reply(
-        "",
-        "xlean",
-        "0.1.0",
-        "lean",
-        "4.0",
-        "text/x-lean",
-        ".lean",
-        "",
-        "",
-        "Lean 4 Jupyter Kernel (WASM)"
+        "",                              // protocol version (auto-filled)
+        "xlean",                         // implementation
+        "0.1.0",                         // implementation_version
+        "lean",                          // language name
+        "4.0",                           // language version
+        "text/x-lean4",                  // mimetype
+        ".lean",                         // file_extension
+        "haskell",                       // pygments_lexer (Lean 4 ~ Haskell)
+        "haskell",                       // codemirror_mode (best available match)
+        "Lean 4 Jupyter Kernel (WASM)"   // banner
     );
 }
 
