@@ -266,6 +266,30 @@ if(EMSCRIPTEN)
 
             message(STATUS "Init .olean files will be embedded in WASM filesystem at /lib/lean/")
 
+            # Also embed Std module artifacts (needed by Sparkle and
+            # other libraries that depend on Std.Data.HashMap etc.)
+            if(EXISTS "${LEAN_OLEAN_SRC}/Std.olean")
+                foreach(_ext olean olean.server olean.private ir)
+                    if(EXISTS "${LEAN_OLEAN_SRC}/Std.${_ext}")
+                        file(COPY "${LEAN_OLEAN_SRC}/Std.${_ext}" DESTINATION "${LEAN_OLEAN_STAGING}/")
+                    endif()
+                endforeach()
+                file(GLOB_RECURSE _STD_FILES
+                    RELATIVE "${LEAN_OLEAN_SRC}"
+                    "${LEAN_OLEAN_SRC}/Std/*.olean"
+                    "${LEAN_OLEAN_SRC}/Std/*.olean.server"
+                    "${LEAN_OLEAN_SRC}/Std/*.olean.private"
+                    "${LEAN_OLEAN_SRC}/Std/*.ir")
+                list(LENGTH _STD_FILES _std_count)
+                message(STATUS "Copying ${_std_count} Std module files to staging")
+                foreach(_f ${_STD_FILES})
+                    get_filename_component(_dir "${_f}" DIRECTORY)
+                    file(MAKE_DIRECTORY "${LEAN_OLEAN_STAGING}/${_dir}")
+                    file(COPY "${LEAN_OLEAN_SRC}/${_f}" DESTINATION "${LEAN_OLEAN_STAGING}/${_dir}/")
+                endforeach()
+                message(STATUS "Std .olean files will be embedded in WASM filesystem")
+            endif()
+
             # Also embed Display.olean (from the project's .lake build)
             # so that the REPL can `import Display` at runtime. This makes
             # #html / #latex / #md / #svg / #json commands available to
@@ -277,6 +301,33 @@ if(EMSCRIPTEN)
                     message(STATUS "Embedding Display.${_ext} in WASM VFS")
                 endif()
             endforeach()
+            # Embed Sparkle .olean files if the example project was built.
+            # This enables `import Sparkle` in JupyterLite REPL cells.
+            set(SPARKLE_OLEAN_SRC "${CMAKE_SOURCE_DIR}/examples/sparkle/.lake/packages/sparkle/.lake/build/lib/lean")
+            if(IS_DIRECTORY "${SPARKLE_OLEAN_SRC}/Sparkle")
+                # Copy top-level Sparkle.olean
+                foreach(_ext olean olean.server olean.private ir)
+                    if(EXISTS "${SPARKLE_OLEAN_SRC}/Sparkle.${_ext}")
+                        file(COPY "${SPARKLE_OLEAN_SRC}/Sparkle.${_ext}" DESTINATION "${LEAN_OLEAN_STAGING}/")
+                    endif()
+                endforeach()
+                # Copy Sparkle/**/* preserving directory structure
+                file(GLOB_RECURSE _SPARKLE_FILES
+                    RELATIVE "${SPARKLE_OLEAN_SRC}"
+                    "${SPARKLE_OLEAN_SRC}/Sparkle/*.olean"
+                    "${SPARKLE_OLEAN_SRC}/Sparkle/*.olean.server"
+                    "${SPARKLE_OLEAN_SRC}/Sparkle/*.olean.private"
+                    "${SPARKLE_OLEAN_SRC}/Sparkle/*.ir")
+                list(LENGTH _SPARKLE_FILES _sparkle_count)
+                foreach(_f ${_SPARKLE_FILES})
+                    get_filename_component(_dir "${_f}" DIRECTORY)
+                    file(MAKE_DIRECTORY "${LEAN_OLEAN_STAGING}/${_dir}")
+                    file(COPY "${SPARKLE_OLEAN_SRC}/${_f}" DESTINATION "${LEAN_OLEAN_STAGING}/${_dir}/")
+                endforeach()
+                message(STATUS "Embedding ${_sparkle_count} Sparkle module files in WASM VFS")
+            else()
+                message(STATUS "Sparkle .olean not found (run 'cd examples/sparkle && lake build' first)")
+            endif()
         else()
             message(WARNING "Init.olean not found at ${LEAN_OLEAN_SRC}/Init.olean - WASM kernel will have no Init module")
         endif()

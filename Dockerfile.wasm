@@ -30,6 +30,12 @@ COPY . .
 # it must be built before WasmRepl because WasmRepl.lean imports it.
 RUN lake build REPL Display WasmRepl
 
+# Build Sparkle example to generate .olean files that will be
+# embedded in the WASM VFS (CMakeLists.txt looks for them at
+# examples/sparkle/.lake/packages/sparkle/.lake/build/lib/lean/).
+RUN cd examples/sparkle && lake update && lake build SparkleDemo || \
+    echo "WARNING: Sparkle build failed, continuing without Sparkle support"
+
 # Build WASM kernel
 # 1. Fix emscripten symlinks
 RUN pixi run -e wasm-build fix-emscripten-links || true

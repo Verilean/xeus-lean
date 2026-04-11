@@ -75,6 +75,57 @@ def markdown (content : String) : IO Unit := emit "text/markdown" content
 def svg (content : String) : IO Unit := emit "image/svg+xml" content
 def json (content : String) : IO Unit := emit "application/json" content
 
+/-- Render a list of numeric values as an SVG waveform diagram.
+    Each value is drawn as a horizontal bar with height proportional
+    to the value, digital-waveform style.
+
+    Parameters:
+    - name: signal name label
+    - values: list of (Nat) values at consecutive time steps
+    - bitWidth: number of bits (for y-axis scaling, default 8)
+    - cellW: pixel width per time step (default 40)
+    - height: total SVG height (default 80) -/
+def waveform (name : String) (values : List Nat)
+    (bitWidth : Nat := 8) (cellW : Nat := 40) (height : Nat := 80) : IO Unit := do
+  let maxVal := (1 <<< bitWidth) - 1
+  let n := values.length
+  let w := n * cellW + 80  -- 80px for label
+  let labelW := 80
+  let plotH := height - 20  -- margin for text
+  -- Build SVG path and value labels
+  let mut pathD := ""
+  let mut labels := ""
+  let mut prevY := 0
+  let mut idx := 0
+  for v in values do
+    let x := labelW + idx * cellW
+    let y := if maxVal > 0 then plotH - (v * plotH / maxVal) else plotH / 2
+    if idx == 0 then
+      pathD := pathD ++ s!"M {x} {y}"
+    else
+      if y != prevY then
+        pathD := pathD ++ s!" L {x} {prevY} L {x} {y}"
+      else
+        pathD := pathD ++ s!" L {x} {y}"
+    pathD := pathD ++ s!" L {x + cellW} {y}"
+    prevY := y
+    let lx := labelW + idx * cellW + cellW / 2
+    labels := labels ++ s!"<text x='{lx}' y='{height - 2}' text-anchor='middle' font-size='9' fill='#666'>{v}</text>"
+    idx := idx + 1
+  -- Grid lines
+  let mut grid := ""
+  for i in List.range (n + 1) do
+    let x := labelW + i * cellW
+    grid := grid ++ s!"<line x1='{x}' y1='0' x2='{x}' y2='{plotH}' stroke='#ddd' stroke-width='0.5'/>"
+  let svgContent := s!"<svg xmlns='http://www.w3.org/2000/svg' width='{w}' height='{height}'>" ++
+    s!"<rect width='{w}' height='{height}' fill='white'/>" ++
+    grid ++
+    s!"<text x='4' y='{plotH / 2 + 4}' font-size='12' font-family='monospace' fill='#333'>{name}</text>" ++
+    s!"<path d='{pathD}' fill='none' stroke='#2196F3' stroke-width='2'/>" ++
+    labels ++
+    "</svg>"
+  emit "image/svg+xml" svgContent
+
 end Display
 
 /-! ## Sugar commands

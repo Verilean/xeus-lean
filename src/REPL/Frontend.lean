@@ -85,6 +85,10 @@ def processInput (input : String) (cmdState? : Option Command.State)
   -- macros and Display.* helpers are available without the user
   -- explicitly importing them. The Display.olean must be embedded
   -- in the WASM VFS alongside Init.olean for this to work.
+  -- Auto-import Display so rich output (#html/#latex/#svg etc.) works
+  -- without explicit imports. Sparkle is NOT auto-imported because
+  -- loading 26 modules takes significant time; users should write
+  -- `import Sparkle` explicitly when they need HDL features.
   let input := if cmdState?.isNone then "import Display\n" ++ input else input
   let inputCtx   := Parser.mkInputContext input fileName
 

@@ -30,12 +30,15 @@ const CELL_EXEC_TIMEOUT = 60_000;
  * on the first code cell in the notebook, which `runCell` does
  * implicitly.
  */
-export async function openLeanNotebook(page: Page): Promise<void> {
+export async function openLeanNotebook(
+  page: Page,
+  notebook: string = 'rich-display.ipynb'
+): Promise<void> {
   // JupyterLite is a SPA, so deep-linking uses a query param rather
   // than a /lab/tree/... path (the static HTTP server doesn't know
   // about /tree/). `path=` tells the client-side router which file
   // to open after the shell mounts.
-  await page.goto('/lab/index.html?path=rich-display.ipynb');
+  await page.goto(`/lab/index.html?path=${notebook}`);
 
   // Wait until the main shell exists.
   await page.locator('#jp-main-dock-panel, .jp-LabShell').first().waitFor({

@@ -76,4 +76,50 @@ test.describe.serial('rich display', () => {
     );
     await expect(output).toContainText('Title');
   });
+
+  test('Waveform SVG display', async () => {
+    // Use Display.waveform to render an SVG waveform
+    const output = await runCell(
+      sharedPage,
+      '#eval do Display.waveform "clk" [0,1,0,1,0,1,0,1] (bitWidth := 1) (cellW := 30) (height := 60)'
+    );
+    // Should produce an SVG with a path element (the waveform line)
+    await expect(output.locator('svg, img')).toBeVisible();
+  });
+});
+
+/**
+ * Sparkle HDL tests. These run in a separate kernel session because
+ * `import Sparkle` must be in the first cell (REPL only processes
+ * imports in the initial header). Loading 26 Sparkle modules takes
+ * extra time.
+ */
+test.describe.serial('sparkle hdl', () => {
+  let sparklePage: Page;
+
+  test.beforeAll(async ({ browser }) => {
+    sparklePage = await browser.newPage();
+    // Open sparkle-demo.ipynb which has `import Sparkle` in the first cell
+    await openLeanNotebook(sparklePage, 'sparkle-demo.ipynb');
+  });
+
+  test.afterAll(async () => {
+    await sparklePage?.close();
+  });
+
+  test('Sparkle counter simulation + waveform', async () => {
+    // The sparkle-demo.ipynb already has the code in the first cell.
+    // Just run it with Shift+Enter.
+    const cells = sparklePage.locator('.jp-Notebook .jp-CodeCell');
+    const cell = cells.first();
+    const editor = cell.locator('.cm-content').first();
+    await editor.click();
+    await sparklePage.keyboard.press('Shift+Enter');
+
+    // Wait for output (Sparkle import + simulation can take a while)
+    const output = cell.locator('.jp-OutputArea-output').first();
+    await output.waitFor({ state: 'visible', timeout: 120_000 });
+
+    await expect(output).toContainText('counter:');
+  });
 });
