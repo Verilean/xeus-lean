@@ -61,6 +61,7 @@ test.describe.serial('rich display', () => {
     await expect(output.locator('svg, img')).toBeVisible();
   });
 
+ fix/rich2
   test('#eval do loop with Display.latex', async () => {
     const output = await runCell(
       sharedPage,

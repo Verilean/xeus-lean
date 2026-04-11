@@ -2,6 +2,7 @@
 Copyright (c) 2025, xeus-lean contributors
 Released under Apache 2.0 license as described in the file LICENSE.
 -/
+ fix/rich2
 -- Explicitly import Init so that `import Display` in user cells
 -- transitively brings in all of Init (ForIn, do-notation, etc.)
 import Init
