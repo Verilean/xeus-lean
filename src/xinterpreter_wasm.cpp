@@ -161,6 +161,10 @@ extern "C" {
                                         lean_object* code,
                                         uint32_t env_id,
                                         uint8_t has_env);
+    lean_object* lean_wasm_repl_complete(lean_object* state_ref,
+                                         lean_object* prefix_str,
+                                         uint32_t env_id,
+                                         uint8_t has_env);
 }
 
 interpreter::interpreter()
@@ -410,11 +414,68 @@ void interpreter::execute_request_impl(send_reply_callback cb,
     }
 }
 
-nl::json interpreter::complete_request_impl(const std::string& /*code*/,
-                                             int /*cursor_pos*/)
+nl::json interpreter::complete_request_impl(const std::string& code,
+                                             int cursor_pos)
 {
-    std::cerr << "[WASM] complete_request_impl: ENTER" << std::endl;
-    return xeus::create_complete_reply({}, 0, 0);
+    std::cerr << "[WASM] complete_request_impl: ENTER (cursor=" << cursor_pos << ")" << std::endl;
+    if (!m_initialized || !m_repl_state) {
+        return xeus::create_complete_reply({}, cursor_pos, cursor_pos);
+    }
+
+    // Extract the token before the cursor for prefix matching.
+    // Walk backwards from cursor_pos to find the start of the
+    // identifier (letters, digits, dots, underscores, #).
+    int start = cursor_pos;
+    while (start > 0) {
+        char c = code[start - 1];
+        if (std::isalnum(c) || c == '.' || c == '_' || c == '#' || c == '\'') {
+            start--;
+        } else {
+            break;
+        }
+    }
+    std::string prefix = code.substr(start, cursor_pos - start);
+    std::cerr << "[WASM] complete_request_impl: prefix='" << prefix << "'" << std::endl;
+
+    if (prefix.empty()) {
+        return xeus::create_complete_reply({}, cursor_pos, cursor_pos);
+    }
+
+    // Call Lean's complete function
+    lean_object* prefix_obj = lean_mk_string(prefix.c_str());
+    lean_object* state_ref = static_cast<lean_object*>(m_repl_state);
+    lean_inc(state_ref);
+
+    uint8_t has_env = (m_current_env >= 0) ? 1 : 0;
+    uint32_t env_id = (m_current_env >= 0) ? static_cast<uint32_t>(m_current_env) : 0;
+
+    lean_object* res = lean_wasm_repl_complete(state_ref, prefix_obj, env_id, has_env);
+
+    if (lean_io_result_is_error(res)) {
+        std::cerr << "[WASM] complete_request_impl: Lean error" << std::endl;
+        lean_dec(res);
+        return xeus::create_complete_reply({}, cursor_pos, cursor_pos);
+    }
+
+    lean_object* result = lean_io_result_get_value(res);
+    const char* result_str = lean_string_cstr(result);
+    std::string json_str = result_str ? result_str : "";
+    lean_dec(res);
+
+    std::cerr << "[WASM] complete_request_impl: result='" << json_str.substr(0, 200) << "'" << std::endl;
+
+    // Parse the JSON response from Lean
+    nl::json matches_list = nl::json::array();
+    try {
+        auto parsed = nl::json::parse(json_str);
+        if (parsed.contains("matches")) {
+            matches_list = parsed["matches"];
+        }
+    } catch (...) {
+        std::cerr << "[WASM] complete_request_impl: JSON parse error" << std::endl;
+    }
+
+    return xeus::create_complete_reply(matches_list, start, cursor_pos);
 }
 
 nl::json interpreter::inspect_request_impl(const std::string& /*code*/,

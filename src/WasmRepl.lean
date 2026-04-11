@@ -93,4 +93,47 @@ def execute (stateRef : IO.Ref REPL.State) (code : String) (envId : UInt32) (has
     IO.eprintln s!"[WasmRepl] error: {json.take 200}"
     return json
 
+/-- Return tab-completion candidates as a JSON string.
+
+    Parameters:
+    - stateRef: mutable reference to the REPL state
+    - prefix: the text before the cursor to complete
+    - envId: environment ID to look up constants in
+    - hasEnv: 1 if envId should be used, 0 to use the latest
+    Returns: JSON string `{"matches":["List.map","List.filter",...]}`
+-/
+@[export lean_wasm_repl_complete]
+def complete (stateRef : IO.Ref REPL.State) (pfx : String) (envId : UInt32) (hasEnv : UInt8) : IO String := do
+  let state ← stateRef.get
+  -- Resolve environment: use specified envId or the latest one
+  let envIdx := if hasEnv.toNat == 1 then envId.toNat
+    else if state.cmdStates.size > 0 then state.cmdStates.size - 1
+    else 0
+  let env? := (state.cmdStates[envIdx]?).map (·.cmdState.env)
+  -- Keywords and # commands to always suggest
+  let keywords : Array String := #["def", "theorem", "lemma", "example",
+    "structure", "class", "instance", "where", "let", "have", "do",
+    "if", "then", "else", "match", "with", "import", "open",
+    "namespace", "section", "end", "variable", "noncomputable",
+    "private", "protected", "partial", "unsafe", "macro", "syntax",
+    "inductive", "abbrev", "opaque", "axiom",
+    "#eval", "#check", "#print", "#reduce",
+    "#html", "#latex", "#md", "#svg", "#json"]
+  let kwMatches := keywords.filter fun kw => kw.startsWith pfx
+  -- If we have an environment, search its constants too
+  let envMatches : Array String := match env? with
+    | none => #[]
+    | some env =>
+      env.constants.fold (init := #[]) fun acc name _info =>
+        if acc.size < 200 then
+          let nameStr := name.toString
+          if nameStr.startsWith pfx then acc.push nameStr
+          else acc
+        else acc
+  -- Combine, deduplicate, limit to 50
+  let allMatches := (kwMatches ++ envMatches).toList.eraseDups
+  let limited := allMatches.take 50
+  let json := Lean.Json.mkObj [("matches", Lean.toJson limited.toArray)]
+  return json.compress
+
 end WasmRepl
