@@ -61,6 +61,15 @@ test.describe.serial('rich display', () => {
     await expect(output.locator('svg, img')).toBeVisible();
   });
 
+ fix/rich2
+  test('#eval do loop with Display.latex', async () => {
+    const output = await runCell(
+      sharedPage,
+      '#eval do\n  for i in [1, 2, 3] do\n    Display.latex s!"{i}^2 = {i * i}"'
+    );
+    await expect(output).toContainText('1');
+  });
+
   test('#md renders Markdown', async () => {
     const output = await runCell(
       sharedPage,
