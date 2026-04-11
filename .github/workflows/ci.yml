@@ -65,6 +65,17 @@ jobs:
         ls -lh .lake/build/bin/xlean
         file .lake/build/bin/xlean
 
+    - name: Build Sparkle example
+      run: |
+        cd examples/sparkle
+        lake update
+        lake build sparkleDemo
+
+    - name: Run Sparkle example
+      run: |
+        cd examples/sparkle
+        .lake/build/bin/sparkleDemo
+
     - name: Upload native binary
       uses: actions/upload-artifact@v4
       with:
