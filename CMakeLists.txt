@@ -290,6 +290,12 @@ if(EMSCRIPTEN)
                 message(STATUS "Std .olean files will be embedded in WASM filesystem")
             endif()
 
+            # Note: Lean module .olean files (Lean.Data, Lean.Elab, etc.)
+            # are NOT embedded because they add ~1.1GB to the WASM binary,
+            # exceeding browser/Node.js WASM size limits (~1GB). Libraries
+            # that `import Lean` (like Sparkle) cannot run in JupyterLite
+            # until a lighter dependency strategy is developed.
+
             # Also embed Display.olean (from the project's .lake build)
             # so that the REPL can `import Display` at runtime. This makes
             # #html / #latex / #md / #svg / #json commands available to
