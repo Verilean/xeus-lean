@@ -72,13 +72,15 @@ def execute (stateRef : IO.Ref REPL.State) (code : String) (envId : UInt32) (has
     stateRef.set newState
     -- If there was rich-display output, inject it as an additional
     -- info message. The C++ interpreter will parse MIME markers out.
-    let response := if displayOutput.trim.isEmpty then response
+    -- Use the raw string as message data (don't trim) to preserve
+    -- ESC (0x1B) sentinels in MIME markers.
+    let response := if displayOutput.isEmpty then response
       else
         let displayMsg : REPL.Message := {
           pos := ⟨0, 0⟩
           endPos := none
           severity := .info
-          data := displayOutput.trim
+          data := displayOutput
         }
         { response with messages := response.messages ++ [displayMsg] }
     let json := Lean.toJson response

@@ -70,10 +70,10 @@ def Message.of (m : Lean.Message) : IO Message := do pure <|
     | .information => .info
     | .warning => .warning
     | .error => .error,
-    -- Use `.trim` (whitespace only) instead of `.trimAscii` (all ASCII
-    -- control chars) so that Display module MIME markers, which use
-    -- ESC (0x1B) as a sentinel, survive the round-trip to the client.
-    data := (← m.data.toString).trim }
+    -- Trim only whitespace (space, tab, newline, carriage return),
+    -- NOT all ASCII control chars. `.trimAscii` strips ESC (0x1B)
+    -- which destroys Display module MIME markers.
+    data := (← m.data.toString).trimAscii.toString }
 
 /-- A Lean `sorry`. -/
 structure Sorry where
