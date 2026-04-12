@@ -86,6 +86,15 @@ RUN mkdir -p notebooks && \
     find _output -name "xlean*" -ls && \
     cat _output/xeus/kernels.json
 
+# 7. Copy olean assets (Std/Lean/Sparkle) for dynamic loading
+RUN PREFIX=$(pixi info -e wasm-host --json 2>/dev/null \
+      | python3 -c "import sys,json; print(json.load(sys.stdin)['environments_info'][0]['prefix'])" \
+      2>/dev/null || echo ".pixi/envs/wasm-host") && \
+    if [ -d "$PREFIX/share/jupyter/olean" ]; then \
+      cp -r "$PREFIX/share/jupyter/olean" _output/xeus/wasm-host/olean && \
+      echo "Copied olean assets: $(find _output/xeus/wasm-host/olean -type f | wc -l) files"; \
+    fi
+
 # --- Serve stage ---
 FROM python:3.12-slim
 

@@ -236,79 +236,82 @@ if(EMSCRIPTEN)
             #   .ir             = IR data (needed for interpretation/elaboration)
             file(MAKE_DIRECTORY "${LEAN_OLEAN_STAGING}")
 
-            # Copy top-level Init files (.olean + .olean.private only)
-            # .server and .ir are excluded to reduce size (~356MB -> ~220MB)
-            foreach(_ext olean olean.private)
+            # Copy ALL Init module artifacts (olean, server, private, ir)
+            # Init must be fully embedded for basic Lean to work.
+            foreach(_ext olean olean.server olean.private ir)
                 if(EXISTS "${LEAN_OLEAN_SRC}/Init.${_ext}")
                     file(COPY "${LEAN_OLEAN_SRC}/Init.${_ext}" DESTINATION "${LEAN_OLEAN_STAGING}/")
                 endif()
             endforeach()
 
-            # Copy all Init/**/* .olean + .olean.private files
+            # Copy all Init/**/* files preserving directory structure
             file(GLOB_RECURSE _INIT_FILES
                 RELATIVE "${LEAN_OLEAN_SRC}"
                 "${LEAN_OLEAN_SRC}/Init/*.olean"
-                "${LEAN_OLEAN_SRC}/Init/*.olean.private")
-            list(FILTER _INIT_FILES EXCLUDE REGEX "\\.server$")
+                "${LEAN_OLEAN_SRC}/Init/*.olean.server"
+                "${LEAN_OLEAN_SRC}/Init/*.olean.private"
+                "${LEAN_OLEAN_SRC}/Init/*.ir")
             list(LENGTH _INIT_FILES _file_count)
-            message(STATUS "Copying ${_file_count} Init .olean+.private files to staging")
+            message(STATUS "Copying ${_file_count} Init module files to staging")
             foreach(_f ${_INIT_FILES})
                 get_filename_component(_dir "${_f}" DIRECTORY)
                 file(MAKE_DIRECTORY "${LEAN_OLEAN_STAGING}/${_dir}")
                 file(COPY "${LEAN_OLEAN_SRC}/${_f}" DESTINATION "${LEAN_OLEAN_STAGING}/${_dir}/")
             endforeach()
 
-            # Use --preload-file to keep .olean data in a separate xlean.data
-            # file fetched at runtime. --embed-file bakes data into JS which
-            # exceeds the 1GB WebAssembly.instantiate() limit when all modules
-            # (Init+Std+Lean+Sparkle ~807MB) are included.
+            # Embed Init .olean files only via --embed-file (baked into JS).
+            # Std/Lean/Sparkle are too large to embed (~800MB total) and
+            # are instead loaded dynamically at runtime via fetch+FS.writeFile
+            # (see src/pre.js). Their .olean files are installed to the
+            # wasm-host prefix and served as static assets by JupyterLite.
             set(LEAN_OLEAN_STAGING_ROOT "${CMAKE_BINARY_DIR}/olean_staging")
             target_link_options(xlean
-                PUBLIC "SHELL: --preload-file ${LEAN_OLEAN_STAGING_ROOT}@/")
+                PUBLIC "SHELL: --embed-file ${LEAN_OLEAN_STAGING_ROOT}@/")
 
             message(STATUS "Init .olean files will be embedded in WASM filesystem at /lib/lean/")
 
-            # Also embed Std module artifacts (needed by Sparkle and
-            # other libraries that depend on Std.Data.HashMap etc.)
-            # Embed Std .olean + .olean.private (not .server/.ir)
+            # Std/Lean .olean files are NOT embedded (too large for WASM).
+            # They are copied to a separate directory and installed as
+            # static assets. The JS runtime fetches them on demand and
+            # writes them into the emscripten VFS (see src/pre.js).
+            set(OLEAN_ASSETS_DIR "${CMAKE_BINARY_DIR}/olean_assets/lib/lean")
+            file(MAKE_DIRECTORY "${OLEAN_ASSETS_DIR}")
+
+            # Copy Std .olean + .olean.private
             if(EXISTS "${LEAN_OLEAN_SRC}/Std.olean")
                 foreach(_ext olean olean.private)
                     if(EXISTS "${LEAN_OLEAN_SRC}/Std.${_ext}")
-                        file(COPY "${LEAN_OLEAN_SRC}/Std.${_ext}" DESTINATION "${LEAN_OLEAN_STAGING}/")
+                        file(COPY "${LEAN_OLEAN_SRC}/Std.${_ext}" DESTINATION "${OLEAN_ASSETS_DIR}/")
                     endif()
                 endforeach()
-                file(GLOB_RECURSE _STD_OLEAN_FILES
-                    RELATIVE "${LEAN_OLEAN_SRC}"
-                    "${LEAN_OLEAN_SRC}/Std/*.olean"
-                    "${LEAN_OLEAN_SRC}/Std/*.olean.private")
-                list(FILTER _STD_OLEAN_FILES EXCLUDE REGEX "\\.server$")
-                list(LENGTH _STD_OLEAN_FILES _std_count)
-                message(STATUS "Copying ${_std_count} Std .olean+.private files to staging (~242MB)")
-                foreach(_f ${_STD_OLEAN_FILES})
+                file(GLOB_RECURSE _STD_FILES RELATIVE "${LEAN_OLEAN_SRC}"
+                    "${LEAN_OLEAN_SRC}/Std/*.olean" "${LEAN_OLEAN_SRC}/Std/*.olean.private")
+                list(FILTER _STD_FILES EXCLUDE REGEX "\\.server$")
+                list(LENGTH _STD_FILES _std_count)
+                message(STATUS "Std: ${_std_count} files → olean_assets (dynamic load)")
+                foreach(_f ${_STD_FILES})
                     get_filename_component(_dir "${_f}" DIRECTORY)
-                    file(MAKE_DIRECTORY "${LEAN_OLEAN_STAGING}/${_dir}")
-                    file(COPY "${LEAN_OLEAN_SRC}/${_f}" DESTINATION "${LEAN_OLEAN_STAGING}/${_dir}/")
+                    file(MAKE_DIRECTORY "${OLEAN_ASSETS_DIR}/${_dir}")
+                    file(COPY "${LEAN_OLEAN_SRC}/${_f}" DESTINATION "${OLEAN_ASSETS_DIR}/${_dir}/")
                 endforeach()
             endif()
 
-            # Embed Lean .olean + .olean.private (not .server/.ir)
+            # Copy Lean .olean + .olean.private
             if(EXISTS "${LEAN_OLEAN_SRC}/Lean.olean")
                 foreach(_ext olean olean.private)
                     if(EXISTS "${LEAN_OLEAN_SRC}/Lean.${_ext}")
-                        file(COPY "${LEAN_OLEAN_SRC}/Lean.${_ext}" DESTINATION "${LEAN_OLEAN_STAGING}/")
+                        file(COPY "${LEAN_OLEAN_SRC}/Lean.${_ext}" DESTINATION "${OLEAN_ASSETS_DIR}/")
                     endif()
                 endforeach()
-                file(GLOB_RECURSE _LEAN_OLEAN_FILES
-                    RELATIVE "${LEAN_OLEAN_SRC}"
-                    "${LEAN_OLEAN_SRC}/Lean/*.olean"
-                    "${LEAN_OLEAN_SRC}/Lean/*.olean.private")
-                list(FILTER _LEAN_OLEAN_FILES EXCLUDE REGEX "\\.server$")
-                list(LENGTH _LEAN_OLEAN_FILES _lean_count)
-                message(STATUS "Copying ${_lean_count} Lean .olean+.private files to staging (~322MB)")
-                foreach(_f ${_LEAN_OLEAN_FILES})
+                file(GLOB_RECURSE _LEAN_FILES RELATIVE "${LEAN_OLEAN_SRC}"
+                    "${LEAN_OLEAN_SRC}/Lean/*.olean" "${LEAN_OLEAN_SRC}/Lean/*.olean.private")
+                list(FILTER _LEAN_FILES EXCLUDE REGEX "\\.server$")
+                list(LENGTH _LEAN_FILES _lean_count)
+                message(STATUS "Lean: ${_lean_count} files → olean_assets (dynamic load)")
+                foreach(_f ${_LEAN_FILES})
                     get_filename_component(_dir "${_f}" DIRECTORY)
-                    file(MAKE_DIRECTORY "${LEAN_OLEAN_STAGING}/${_dir}")
-                    file(COPY "${LEAN_OLEAN_SRC}/${_f}" DESTINATION "${LEAN_OLEAN_STAGING}/${_dir}/")
+                    file(MAKE_DIRECTORY "${OLEAN_ASSETS_DIR}/${_dir}")
+                    file(COPY "${LEAN_OLEAN_SRC}/${_f}" DESTINATION "${OLEAN_ASSETS_DIR}/${_dir}/")
                 endforeach()
             endif()
 
@@ -323,33 +326,54 @@ if(EMSCRIPTEN)
                     message(STATUS "Embedding Display.${_ext} in WASM VFS")
                 endif()
             endforeach()
-            # Embed Sparkle .olean files if the example project was built.
-            # This enables `import Sparkle` in JupyterLite REPL cells.
+            # Copy Sparkle .olean to assets (dynamic load, not embed)
             set(SPARKLE_OLEAN_SRC "${CMAKE_SOURCE_DIR}/examples/sparkle/.lake/packages/sparkle/.lake/build/lib/lean")
             if(IS_DIRECTORY "${SPARKLE_OLEAN_SRC}/Sparkle")
-                # Copy top-level Sparkle.olean
-                foreach(_ext olean olean.server olean.private ir)
+                foreach(_ext olean olean.private)
                     if(EXISTS "${SPARKLE_OLEAN_SRC}/Sparkle.${_ext}")
-                        file(COPY "${SPARKLE_OLEAN_SRC}/Sparkle.${_ext}" DESTINATION "${LEAN_OLEAN_STAGING}/")
+                        file(COPY "${SPARKLE_OLEAN_SRC}/Sparkle.${_ext}" DESTINATION "${OLEAN_ASSETS_DIR}/")
                     endif()
                 endforeach()
-                # Copy Sparkle/**/* preserving directory structure
-                file(GLOB_RECURSE _SPARKLE_FILES
-                    RELATIVE "${SPARKLE_OLEAN_SRC}"
-                    "${SPARKLE_OLEAN_SRC}/Sparkle/*.olean"
-                    "${SPARKLE_OLEAN_SRC}/Sparkle/*.olean.server"
-                    "${SPARKLE_OLEAN_SRC}/Sparkle/*.olean.private"
-                    "${SPARKLE_OLEAN_SRC}/Sparkle/*.ir")
+                file(GLOB_RECURSE _SPARKLE_FILES RELATIVE "${SPARKLE_OLEAN_SRC}"
+                    "${SPARKLE_OLEAN_SRC}/Sparkle/*.olean" "${SPARKLE_OLEAN_SRC}/Sparkle/*.olean.private")
+                list(FILTER _SPARKLE_FILES EXCLUDE REGEX "\\.server$")
                 list(LENGTH _SPARKLE_FILES _sparkle_count)
                 foreach(_f ${_SPARKLE_FILES})
                     get_filename_component(_dir "${_f}" DIRECTORY)
-                    file(MAKE_DIRECTORY "${LEAN_OLEAN_STAGING}/${_dir}")
-                    file(COPY "${SPARKLE_OLEAN_SRC}/${_f}" DESTINATION "${LEAN_OLEAN_STAGING}/${_dir}/")
+                    file(MAKE_DIRECTORY "${OLEAN_ASSETS_DIR}/${_dir}")
+                    file(COPY "${SPARKLE_OLEAN_SRC}/${_f}" DESTINATION "${OLEAN_ASSETS_DIR}/${_dir}/")
                 endforeach()
-                message(STATUS "Embedding ${_sparkle_count} Sparkle module files in WASM VFS")
+                message(STATUS "Sparkle: ${_sparkle_count} files → olean_assets (dynamic load)")
             else()
-                message(STATUS "Sparkle .olean not found (run 'cd examples/sparkle && lake build' first)")
+                message(STATUS "Sparkle .olean not found")
             endif()
+
+            # Generate manifest.json listing all .olean asset files
+            file(GLOB_RECURSE _ALL_ASSET_FILES
+                RELATIVE "${CMAKE_BINARY_DIR}/olean_assets/lib/lean"
+                "${CMAKE_BINARY_DIR}/olean_assets/lib/lean/*.olean"
+                "${CMAKE_BINARY_DIR}/olean_assets/lib/lean/*.olean.private")
+            list(FILTER _ALL_ASSET_FILES EXCLUDE REGEX "\\.server$")
+            # Write JSON array
+            set(_manifest_json "[")
+            set(_first TRUE)
+            foreach(_f ${_ALL_ASSET_FILES})
+                if(_first)
+                    set(_first FALSE)
+                else()
+                    string(APPEND _manifest_json ",")
+                endif()
+                string(APPEND _manifest_json "\"${_f}\"")
+            endforeach()
+            string(APPEND _manifest_json "]")
+            file(WRITE "${CMAKE_BINARY_DIR}/olean_assets/lib/lean/manifest.json" "${_manifest_json}")
+            list(LENGTH _ALL_ASSET_FILES _total_assets)
+            message(STATUS "Generated olean manifest: ${_total_assets} files")
+
+            # Install olean_assets so they're served as static files.
+            install(DIRECTORY "${CMAKE_BINARY_DIR}/olean_assets/lib/lean/"
+                    DESTINATION "share/jupyter/olean"
+                    OPTIONAL)
         else()
             message(WARNING "Init.olean not found at ${LEAN_OLEAN_SRC}/Init.olean - WASM kernel will have no Init module")
         endif()
