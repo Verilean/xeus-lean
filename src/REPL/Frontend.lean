@@ -101,6 +101,12 @@ def processInput (input : String) (cmdState? : Option Command.State)
     let initOlean := System.FilePath.mk "/lib/lean/Init.olean"
     let initDir := System.FilePath.mk "/lib/lean/Init"
     let initOleanExists ← initOlean.pathExists
+    -- Check additional modules
+    let stdOlean ← (System.FilePath.mk "/lib/lean/Std.olean").pathExists
+    let leanOlean ← (System.FilePath.mk "/lib/lean/Lean.olean").pathExists
+    let sparkleOlean ← (System.FilePath.mk "/lib/lean/Sparkle.olean").pathExists
+    let displayOlean ← (System.FilePath.mk "/lib/lean/Display.olean").pathExists
+    IO.eprintln s!"[processInput] Std.olean={stdOlean} Lean.olean={leanOlean} Sparkle.olean={sparkleOlean} Display.olean={displayOlean}"
     let initDirExists ← initDir.isDir
     IO.eprintln s!"[processInput] /lib/lean/Init.olean exists={initOleanExists}, /lib/lean/Init isDir={initDirExists}"
     let sp ← Lean.searchPathRef.get

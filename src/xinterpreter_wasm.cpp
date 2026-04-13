@@ -15,6 +15,7 @@
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/stack.h>
+#include <emscripten/emscripten.h>
 #endif
 
 #include "xeus-lean/xinterpreter_wasm.hpp"
@@ -307,6 +308,56 @@ std::string interpreter::call_lean_repl(const std::string& code, int env)
 void interpreter::configure_impl()
 {
     std::cerr << "[WASM] configure_impl: ENTER" << std::endl;
+
+#ifdef __EMSCRIPTEN__
+    // Register lazy .olean files from the manifest served alongside
+    // the kernel. This MUST happen from C++ because --post-js code
+    // does not execute in JupyterLite's Web Worker context.
+    // Use emscripten_run_script_int which takes a C string — avoids
+    // EM_ASM macro parsing issues with JavaScript syntax.
+    int registered = emscripten_run_script_int(
+        "var candidates = ['/xeus/wasm-host/olean/', './olean/', '../olean/'];"
+        "try { if (scriptDirectory) candidates.unshift(scriptDirectory + '../olean/'); } catch(e) {}"
+        "var baseUrl = '';"
+        "for (var i = 0; i < candidates.length; i++) {"
+        "  try {"
+        "    var xhr = new XMLHttpRequest();"
+        "    xhr.open('GET', candidates[i] + 'manifest.json', false);"
+        "    xhr.send();"
+        "    if (xhr.status === 200) { baseUrl = candidates[i]; break; }"
+        "  } catch(e) {}"
+        "}"
+        "if (!baseUrl) { 0; } else {"
+        "  try {"
+        "    var xhr2 = new XMLHttpRequest();"
+        "    xhr2.open('GET', baseUrl + 'manifest.json', false);"
+        "    xhr2.send();"
+        "    var manifest = JSON.parse(xhr2.responseText);"
+        "    var count = 0;"
+        "    for (var i = 0; i < manifest.length; i++) {"
+        "      var relPath = manifest[i];"
+        "      var pp = relPath.split('/');"
+        "      var dir = '/lib/lean';"
+        "      for (var j = 0; j < pp.length - 1; j++) {"
+        "        dir += '/' + pp[j];"
+        "        try { FS.mkdir(dir); } catch(e) {}"
+        "      }"
+        "      try {"
+        "        FS.createLazyFile(dir, pp[pp.length-1], baseUrl + relPath, true, false);"
+        "        count++;"
+        "      } catch(e) {"
+        "        if (relPath.indexOf('private') >= 0 || relPath.indexOf('HashMap') >= 0) {"
+        "          console.error('[WASM] createLazyFile FAILED: ' + relPath + ' err=' + e);"
+        "        }"
+        "      }"
+        "    }"
+        "    count;"
+        "  } catch(e) { -1; }"
+        "}"
+    );
+    std::cerr << "[WASM] Registered " << registered << " lazy .olean files" << std::endl;
+#endif
+
     test_hash_tables();
     initialize_lean_runtime();
     std::cerr << "[WASM] configure_impl: EXIT" << std::endl;

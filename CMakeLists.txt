@@ -277,15 +277,16 @@ if(EMSCRIPTEN)
             set(OLEAN_ASSETS_DIR "${CMAKE_BINARY_DIR}/olean_assets/lib/lean")
             file(MAKE_DIRECTORY "${OLEAN_ASSETS_DIR}")
 
-            # Copy Std .olean + .olean.private
+            # Copy Std .olean + .olean.private + .ir + .ilean
             if(EXISTS "${LEAN_OLEAN_SRC}/Std.olean")
-                foreach(_ext olean olean.private)
+                foreach(_ext olean olean.private ir ilean)
                     if(EXISTS "${LEAN_OLEAN_SRC}/Std.${_ext}")
                         file(COPY "${LEAN_OLEAN_SRC}/Std.${_ext}" DESTINATION "${OLEAN_ASSETS_DIR}/")
                     endif()
                 endforeach()
                 file(GLOB_RECURSE _STD_FILES RELATIVE "${LEAN_OLEAN_SRC}"
-                    "${LEAN_OLEAN_SRC}/Std/*.olean" "${LEAN_OLEAN_SRC}/Std/*.olean.private")
+                    "${LEAN_OLEAN_SRC}/Std/*.olean" "${LEAN_OLEAN_SRC}/Std/*.olean.private"
+                    "${LEAN_OLEAN_SRC}/Std/*.ir" "${LEAN_OLEAN_SRC}/Std/*.ilean")
                 list(FILTER _STD_FILES EXCLUDE REGEX "\\.server$")
                 list(LENGTH _STD_FILES _std_count)
                 message(STATUS "Std: ${_std_count} files → olean_assets (dynamic load)")
@@ -296,15 +297,16 @@ if(EMSCRIPTEN)
                 endforeach()
             endif()
 
-            # Copy Lean .olean + .olean.private
+            # Copy Lean .olean + .olean.private + .ir + .ilean
             if(EXISTS "${LEAN_OLEAN_SRC}/Lean.olean")
-                foreach(_ext olean olean.private)
+                foreach(_ext olean olean.private ir ilean)
                     if(EXISTS "${LEAN_OLEAN_SRC}/Lean.${_ext}")
                         file(COPY "${LEAN_OLEAN_SRC}/Lean.${_ext}" DESTINATION "${OLEAN_ASSETS_DIR}/")
                     endif()
                 endforeach()
                 file(GLOB_RECURSE _LEAN_FILES RELATIVE "${LEAN_OLEAN_SRC}"
-                    "${LEAN_OLEAN_SRC}/Lean/*.olean" "${LEAN_OLEAN_SRC}/Lean/*.olean.private")
+                    "${LEAN_OLEAN_SRC}/Lean/*.olean" "${LEAN_OLEAN_SRC}/Lean/*.olean.private"
+                    "${LEAN_OLEAN_SRC}/Lean/*.ir" "${LEAN_OLEAN_SRC}/Lean/*.ilean")
                 list(FILTER _LEAN_FILES EXCLUDE REGEX "\\.server$")
                 list(LENGTH _LEAN_FILES _lean_count)
                 message(STATUS "Lean: ${_lean_count} files → olean_assets (dynamic load)")
@@ -352,7 +354,9 @@ if(EMSCRIPTEN)
             file(GLOB_RECURSE _ALL_ASSET_FILES
                 RELATIVE "${CMAKE_BINARY_DIR}/olean_assets/lib/lean"
                 "${CMAKE_BINARY_DIR}/olean_assets/lib/lean/*.olean"
-                "${CMAKE_BINARY_DIR}/olean_assets/lib/lean/*.olean.private")
+                "${CMAKE_BINARY_DIR}/olean_assets/lib/lean/*.olean.private"
+                "${CMAKE_BINARY_DIR}/olean_assets/lib/lean/*.ir"
+                "${CMAKE_BINARY_DIR}/olean_assets/lib/lean/*.ilean")
             list(FILTER _ALL_ASSET_FILES EXCLUDE REGEX "\\.server$")
             # Write JSON array
             set(_manifest_json "[")
