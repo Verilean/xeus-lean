@@ -120,15 +120,32 @@ test.describe.serial('sparkle hdl', () => {
       }
     });
 
+    // Also capture ALL console messages to a separate list for post-mortem.
+    const allLogs: string[] = [];
+    sparklePage.on('console', (msg) => {
+      allLogs.push(`[${msg.type()}] ${msg.text()}`);
+    });
+
     const cells = sparklePage.locator('.jp-Notebook .jp-CodeCell');
     const cell = cells.first();
     const editor = cell.locator('.cm-content').first();
     await editor.click();
     await sparklePage.keyboard.press('Shift+Enter');
 
-    // Wait for output (Sparkle import + simulation can take a while)
+    // Wait for output. Sparkle import takes minutes on first run because
+    // 7000+ .olean files are fetched lazily from the JupyterLite server.
+    test.setTimeout(600_000);
     const output = cell.locator('.jp-OutputArea-output').first();
-    await output.waitFor({ state: 'visible', timeout: 120_000 });
+    try {
+      await output.waitFor({ state: 'visible', timeout: 540_000 });
+    } catch (e) {
+      // Dump ALL WASM logs on timeout so we can see where it hung.
+      console.log('=== TIMEOUT — dumping ALL console logs ===');
+      for (const log of allLogs.slice(-200)) {
+        console.log(log);
+      }
+      throw e;
+    }
 
     // Dump WASM REPL logs
     console.log('=== WASM REPL debug logs ===');

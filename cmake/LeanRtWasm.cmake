@@ -230,6 +230,30 @@ extern \"C\" LEAN_EXPORT lean_obj_res lean_uv_udp_cancel_recv(b_obj_arg socket) 
         _object_cpp "${_object_cpp}")
     file(WRITE "${LEAN4_RUNTIME_DIR}/object.cpp" "${_object_cpp}")
 
+    # --- Patch module.cpp to disable LEAN_MMAP for WASM ---
+    # The default implementation uses mmap(base_addr, ..., MAP_FIXED) which
+    # fails in emscripten because WASM memory doesn't support fixed virtual
+    # addresses matching the olean_header.base_addr (x86-64 virtual addr).
+    # We force is_mmap=false so the fallback path (malloc+read into one
+    # big_buffer with offset-based layout) is used instead.
+    #
+    # The fallback still computes offsets from base_addr but those are
+    # relative within the big_buffer, which works regardless of absolute
+    # virtual addresses.
+    file(READ "${LEAN4_SRC_DIR}/src/library/module.cpp" _module_cpp)
+    string(FIND "${_module_cpp}" "// WASM: force is_mmap=false" _module_patched)
+    if(_module_patched EQUAL -1)
+        # Replace the start of the mmap block to force fallback
+        string(REPLACE
+            "#ifndef LEAN_MMAP\n    bool is_mmap = false;\n#else"
+            "#if 1 // WASM: force is_mmap=false\n    bool is_mmap = false;\n#else"
+            _module_cpp "${_module_cpp}")
+        file(WRITE "${LEAN4_SRC_DIR}/src/library/module.cpp" "${_module_cpp}")
+        message(STATUS "Patched module.cpp: forced is_mmap=false for WASM")
+    else()
+        message(STATUS "module.cpp already patched for WASM")
+    endif()
+
     # --- Fix EMSCRIPTEN stub signature bugs in lean4 source ---
     # These are bugs where the #else (EMSCRIPTEN) branch has a different
     # signature from the header and the non-EMSCRIPTEN implementation.

@@ -21,17 +21,24 @@ from the LAST command (usually the EOF/terminal command, which has none).
 This version collects messages and trees after each command and accumulates
 them, so output from `#check`, `#eval`, etc. is preserved.
 -/
-private partial def processCommandsAccum
-    (accMsgs : MessageLog) (accTrees : PersistentArray InfoTree) :
+private partial def processCommandsAccumAt
+    (n : Nat) (accMsgs : MessageLog) (accTrees : PersistentArray InfoTree) :
     Frontend.FrontendM (MessageLog × PersistentArray InfoTree) := do
+  IO.eprintln s!"[processCommandsAccum] #{n} ENTER"
   let done ← Frontend.processCommand
+  IO.eprintln s!"[processCommandsAccum] #{n} processCommand DONE, done={done}"
   let cmdState ← Frontend.getCommandState
   let newMsgs := accMsgs ++ cmdState.messages
   let newTrees := accTrees ++ cmdState.infoState.trees
   if done then
     return (newMsgs, newTrees)
   else
-    processCommandsAccum newMsgs newTrees
+    processCommandsAccumAt (n + 1) newMsgs newTrees
+
+private def processCommandsAccum
+    (accMsgs : MessageLog) (accTrees : PersistentArray InfoTree) :
+    Frontend.FrontendM (MessageLog × PersistentArray InfoTree) :=
+  processCommandsAccumAt 0 accMsgs accTrees
 
 /--
 Wrapper for command processing that enables info states, and returns

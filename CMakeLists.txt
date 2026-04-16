@@ -149,9 +149,139 @@ if(EMSCRIPTEN)
     # xlean WASM executable
     # ======================
 
+    # Sparkle C FFI implementations + Lean-compiled IR sources.
+    # Needed for Signal.sample / Signal.circuit in the WASM REPL.
+    # The Lean interpreter looks up `@[extern]` decls by their mangled
+    # `lp_sparkle___private_...___boxed` name, which lives in the .c
+    # files Lean generated under .lake/build/ir/. We copy all sources
+    # to the build dir with a .cpp extension so CMake's C++17 flag
+    # doesn't reject a .c file. To prevent wasm-ld DCE from stripping
+    # these symbols (nothing in main references them; the interpreter
+    # resolves them dynamically), we wrap them in a static archive
+    # and link with --whole-archive.
+    set(SPARKLE_ROOT "${CMAKE_SOURCE_DIR}/examples/sparkle/.lake/packages/sparkle")
+    set(SPARKLE_C_BARRIER "${SPARKLE_ROOT}/c_src/sparkle_barrier.c")
+    set(SPARKLE_IR_DIR "${SPARKLE_ROOT}/.lake/build/ir")
+    set(SPARKLE_WASM_SOURCES)
+    if(EXISTS "${SPARKLE_C_BARRIER}")
+        # Wrap in extern "C" so the C++ compiler does not name-mangle
+        # sparkle_cache_get / sparkle_eval_at. The callers (Signal.c)
+        # reference them as plain C symbols.
+        file(READ "${SPARKLE_C_BARRIER}" _barrier_body)
+        # #include must stay outside extern "C" (lean.h pulls in C++
+        # headers that must have C++ linkage). Strip the original
+        # #include lines and emit them before the extern "C" block.
+        string(REGEX MATCHALL "#include[^\n]*\n" _barrier_includes "${_barrier_body}")
+        string(REGEX REPLACE "#include[^\n]*\n" "" _barrier_body_no_inc "${_barrier_body}")
+        string(JOIN "" _barrier_inc_str ${_barrier_includes})
+        set(SPARKLE_C_CPP "${CMAKE_BINARY_DIR}/sparkle_barrier.cpp")
+        file(WRITE "${SPARKLE_C_CPP}" "${_barrier_inc_str}\nextern \"C\" {\n${_barrier_body_no_inc}\n}\n")
+        list(APPEND SPARKLE_WASM_SOURCES "${SPARKLE_C_CPP}")
+        message(STATUS "Including sparkle_barrier.cpp in xlean for WASM FFI")
+    endif()
+    set(_excluded_init_syms "")
+    if(EXISTS "${SPARKLE_IR_DIR}")
+        file(GLOB_RECURSE _SPARKLE_IR_C RELATIVE "${SPARKLE_IR_DIR}"
+             "${SPARKLE_IR_DIR}/*.c")
+        # Exclude every IR file that references sparkle_jit_* — those
+        # symbols live in sparkle_jit.c which has mismatched signatures
+        # vs the IR's view. Stubs for their `initialize_sparkle_*`
+        # entry points are provided below.
+        set(_filtered "")
+        foreach(_rel ${_SPARKLE_IR_C})
+            file(STRINGS "${SPARKLE_IR_DIR}/${_rel}" _jit_refs REGEX "sparkle_jit_")
+            if(_jit_refs)
+                # Derive the module name from path so we can stub init.
+                string(REGEX REPLACE "\\.c$" "" _mod "${_rel}")
+                string(REPLACE "/" "_" _mod "${_mod}")
+                list(APPEND _excluded_init_syms "${_mod}")
+            else()
+                list(APPEND _filtered "${_rel}")
+            endif()
+        endforeach()
+        set(_SPARKLE_IR_C ${_filtered})
+        foreach(_rel ${_SPARKLE_IR_C})
+            string(REPLACE "/" "_" _flat "${_rel}")
+            string(REGEX REPLACE "\\.c$" ".cpp" _flat "${_flat}")
+            set(_dst "${CMAKE_BINARY_DIR}/sparkle_ir_${_flat}")
+            configure_file("${SPARKLE_IR_DIR}/${_rel}" "${_dst}" COPYONLY)
+            list(APPEND SPARKLE_WASM_SOURCES "${_dst}")
+        endforeach()
+        list(LENGTH _SPARKLE_IR_C _n_ir)
+        message(STATUS "Including ${_n_ir} Sparkle IR .cpp files in xlean for WASM FFI")
+    endif()
+    # Stub initialize_sparkle_* for every IR file we excluded above,
+    # so Sparkle.cpp's module-init sequence still links.
+    set(SPARKLE_JIT_STUB "${CMAKE_BINARY_DIR}/sparkle_jit_stubs.cpp")
+    set(_init_stub_decls "")
+    foreach(_mod ${_excluded_init_syms})
+        set(_init_stub_decls "${_init_stub_decls}INIT_STUB(${_mod})\n")
+    endforeach()
+    file(WRITE "${SPARKLE_JIT_STUB}"
+"#include <lean/lean.h>
+extern \"C\" {
+// The Lean 4.28 IR calls module init with a single uint8_t (builtin flag).
+// Older Lean/sparkle_jit.c used (uint8_t, lean_object*); match the IR.
+#define INIT_STUB(mod) LEAN_EXPORT lean_object* initialize_sparkle_##mod(uint8_t builtin) { return lean_io_result_mk_ok(lean_box(0)); }
+${_init_stub_decls}}
+")
+    list(APPEND SPARKLE_WASM_SOURCES "${SPARKLE_JIT_STUB}")
+    list(LENGTH _excluded_init_syms _n_stubs)
+    message(STATUS "Including sparkle_jit_stubs.cpp (${_n_stubs} init stubs)")
+    if(SPARKLE_WASM_SOURCES)
+        add_library(sparkle_wasm STATIC ${SPARKLE_WASM_SOURCES})
+        target_compile_options(sparkle_wasm PRIVATE -fPIC -g2)
+        target_compile_features(sparkle_wasm PRIVATE cxx_std_17)
+        target_include_directories(sparkle_wasm PRIVATE ${LEAN4_INCLUDE_DIR})
+        set_property(TARGET sparkle_wasm PROPERTY POSITION_INDEPENDENT_CODE ON)
+    endif()
     add_executable(xlean src/main_emscripten_kernel.cpp)
     target_link_libraries(xlean PRIVATE xeus-lite)
     target_link_libraries(xlean PRIVATE xeus-lean-static)
+    # Force-link the entire Sparkle archive so wasm-ld does not strip
+    # the dynamically-resolved `lp_sparkle_*` symbols.
+    # --whole-archive alone is not enough: wasm-ld still gc-sections
+    # unreferenced symbols. --export-dynamic + --no-gc-sections keeps
+    # them in the final wasm so the Lean interpreter's dlsym() works.
+    if(TARGET sparkle_wasm)
+        # Extract LEAN_EXPORT symbol names from the generated IR .cpp
+        # files at configure time and pass them to emcc as
+        # EXPORTED_FUNCTIONS. wasm-ld LTO drops symbols nothing
+        # references; the only reliable way to keep interpreter-
+        # resolved symbols in the final wasm is to name them.
+        set(_sparkle_syms "")
+        foreach(_src ${SPARKLE_WASM_SOURCES})
+            # Skip the stubs file so we don't pick up the macro
+            # parameter `name` as a symbol.
+            if(_src MATCHES "sparkle_jit_stubs\\.cpp$")
+                continue()
+            endif()
+            file(STRINGS "${_src}" _hits REGEX "LEAN_EXPORT[^(]*[ *]([a-zA-Z_][a-zA-Z_0-9]*)\\(")
+            foreach(_l ${_hits})
+                if(_l MATCHES "LEAN_EXPORT[^(]*[ *]([a-zA-Z_][a-zA-Z_0-9]*)\\(")
+                    list(APPEND _sparkle_syms "_${CMAKE_MATCH_1}")
+                endif()
+            endforeach()
+        endforeach()
+        # Always include the C FFI entry points used by Sparkle IR.
+        list(APPEND _sparkle_syms "_sparkle_cache_get" "_sparkle_eval_at")
+        list(REMOVE_DUPLICATES _sparkle_syms)
+        list(LENGTH _sparkle_syms _n_syms)
+        message(STATUS "Sparkle exports: ${_n_syms} symbols will be kept")
+        list(JOIN _sparkle_syms "," _sparkle_csv)
+        set(_sparkle_exports_file "${CMAKE_BINARY_DIR}/sparkle_exports.txt")
+        # No _main — this executable uses EMSCRIPTEN_BINDINGS and
+        # emscripten provides its own entry stub. Listing _main here
+        # triggers "undefined exported symbol" since the user code
+        # never defines it.
+        file(WRITE "${_sparkle_exports_file}" "[${_sparkle_csv}]")
+        # LINK_FLAGS does NOT evaluate generator expressions, so use
+        # the concrete archive path instead of $<TARGET_FILE:...>.
+        set(_sparkle_archive "${CMAKE_BINARY_DIR}/libsparkle_wasm.a")
+        set_property(TARGET xlean APPEND_STRING PROPERTY LINK_FLAGS
+            " -Wl,--whole-archive ${_sparkle_archive} -Wl,--no-whole-archive -sEXPORTED_FUNCTIONS=@${_sparkle_exports_file}")
+        add_dependencies(xlean sparkle_wasm)
+    endif()
     # Link stage0 libraries (order matters: REPL -> Lean -> Std -> Init -> leanrt)
     target_link_libraries(xlean PRIVATE
         ${STAGE0_REPL_LIB}
@@ -193,6 +323,8 @@ if(EMSCRIPTEN)
         PUBLIC "SHELL: -s WASM_BIGINT"
         PUBLIC "SHELL: -s EXPORTED_RUNTIME_METHODS='[\"FS\",\"ENV\",\"PATH\",\"ERRNO_CODES\"]'"
         PUBLIC "SHELL: -s FORCE_FILESYSTEM"
+        # EXPORT_ALL=1 did not retain Sparkle IR symbols; we use
+        # --whole-archive below on sparkle_wasm instead.
     )
 
     target_link_options(xlean
@@ -277,17 +409,19 @@ if(EMSCRIPTEN)
             set(OLEAN_ASSETS_DIR "${CMAKE_BINARY_DIR}/olean_assets/lib/lean")
             file(MAKE_DIRECTORY "${OLEAN_ASSETS_DIR}")
 
-            # Copy Std .olean + .olean.private + .ir + .ilean
+            # Copy Std .olean + .olean.server + .olean.private + .ir + .ilean
+            # NOTE: .olean.server is required because Lean's findOLeanParts
+            # only loads .olean.private if .olean.server exists alongside it.
             if(EXISTS "${LEAN_OLEAN_SRC}/Std.olean")
-                foreach(_ext olean olean.private ir ilean)
+                foreach(_ext olean olean.server olean.private ir ilean)
                     if(EXISTS "${LEAN_OLEAN_SRC}/Std.${_ext}")
                         file(COPY "${LEAN_OLEAN_SRC}/Std.${_ext}" DESTINATION "${OLEAN_ASSETS_DIR}/")
                     endif()
                 endforeach()
                 file(GLOB_RECURSE _STD_FILES RELATIVE "${LEAN_OLEAN_SRC}"
-                    "${LEAN_OLEAN_SRC}/Std/*.olean" "${LEAN_OLEAN_SRC}/Std/*.olean.private"
+                    "${LEAN_OLEAN_SRC}/Std/*.olean" "${LEAN_OLEAN_SRC}/Std/*.olean.server"
+                    "${LEAN_OLEAN_SRC}/Std/*.olean.private"
                     "${LEAN_OLEAN_SRC}/Std/*.ir" "${LEAN_OLEAN_SRC}/Std/*.ilean")
-                list(FILTER _STD_FILES EXCLUDE REGEX "\\.server$")
                 list(LENGTH _STD_FILES _std_count)
                 message(STATUS "Std: ${_std_count} files → olean_assets (dynamic load)")
                 foreach(_f ${_STD_FILES})
@@ -297,17 +431,17 @@ if(EMSCRIPTEN)
                 endforeach()
             endif()
 
-            # Copy Lean .olean + .olean.private + .ir + .ilean
+            # Copy Lean .olean + .olean.server + .olean.private + .ir + .ilean
             if(EXISTS "${LEAN_OLEAN_SRC}/Lean.olean")
-                foreach(_ext olean olean.private ir ilean)
+                foreach(_ext olean olean.server olean.private ir ilean)
                     if(EXISTS "${LEAN_OLEAN_SRC}/Lean.${_ext}")
                         file(COPY "${LEAN_OLEAN_SRC}/Lean.${_ext}" DESTINATION "${OLEAN_ASSETS_DIR}/")
                     endif()
                 endforeach()
                 file(GLOB_RECURSE _LEAN_FILES RELATIVE "${LEAN_OLEAN_SRC}"
-                    "${LEAN_OLEAN_SRC}/Lean/*.olean" "${LEAN_OLEAN_SRC}/Lean/*.olean.private"
+                    "${LEAN_OLEAN_SRC}/Lean/*.olean" "${LEAN_OLEAN_SRC}/Lean/*.olean.server"
+                    "${LEAN_OLEAN_SRC}/Lean/*.olean.private"
                     "${LEAN_OLEAN_SRC}/Lean/*.ir" "${LEAN_OLEAN_SRC}/Lean/*.ilean")
-                list(FILTER _LEAN_FILES EXCLUDE REGEX "\\.server$")
                 list(LENGTH _LEAN_FILES _lean_count)
                 message(STATUS "Lean: ${_lean_count} files → olean_assets (dynamic load)")
                 foreach(_f ${_LEAN_FILES})
@@ -337,8 +471,11 @@ if(EMSCRIPTEN)
                     endif()
                 endforeach()
                 file(GLOB_RECURSE _SPARKLE_FILES RELATIVE "${SPARKLE_OLEAN_SRC}"
-                    "${SPARKLE_OLEAN_SRC}/Sparkle/*.olean" "${SPARKLE_OLEAN_SRC}/Sparkle/*.olean.private")
-                list(FILTER _SPARKLE_FILES EXCLUDE REGEX "\\.server$")
+                    "${SPARKLE_OLEAN_SRC}/Sparkle/*.olean"
+                    "${SPARKLE_OLEAN_SRC}/Sparkle/*.olean.server"
+                    "${SPARKLE_OLEAN_SRC}/Sparkle/*.olean.private"
+                    "${SPARKLE_OLEAN_SRC}/Sparkle/*.ir"
+                    "${SPARKLE_OLEAN_SRC}/Sparkle/*.ilean")
                 list(LENGTH _SPARKLE_FILES _sparkle_count)
                 foreach(_f ${_SPARKLE_FILES})
                     get_filename_component(_dir "${_f}" DIRECTORY)
@@ -354,10 +491,10 @@ if(EMSCRIPTEN)
             file(GLOB_RECURSE _ALL_ASSET_FILES
                 RELATIVE "${CMAKE_BINARY_DIR}/olean_assets/lib/lean"
                 "${CMAKE_BINARY_DIR}/olean_assets/lib/lean/*.olean"
+                "${CMAKE_BINARY_DIR}/olean_assets/lib/lean/*.olean.server"
                 "${CMAKE_BINARY_DIR}/olean_assets/lib/lean/*.olean.private"
                 "${CMAKE_BINARY_DIR}/olean_assets/lib/lean/*.ir"
                 "${CMAKE_BINARY_DIR}/olean_assets/lib/lean/*.ilean")
-            list(FILTER _ALL_ASSET_FILES EXCLUDE REGEX "\\.server$")
             # Write JSON array
             set(_manifest_json "[")
             set(_first TRUE)
@@ -391,13 +528,17 @@ if(EMSCRIPTEN)
     # We generate a static lookup table from all symbols in our libraries.
     include(GenerateSymbolTable)
     set(WASM_SYMTAB_FILE "${CMAKE_BINARY_DIR}/wasm_symbol_table.cpp")
-    generate_wasm_symbol_table(${WASM_SYMTAB_FILE}
+    set(_symtab_libs
         ${LEANRT_LIB}
         ${STAGE0_INIT_LIB}
         ${STAGE0_STD_LIB}
         ${STAGE0_LEAN_LIB}
         ${STAGE0_REPL_LIB}
     )
+    if(TARGET sparkle_wasm)
+        list(APPEND _symtab_libs sparkle_wasm)
+    endif()
+    generate_wasm_symbol_table(${WASM_SYMTAB_FILE} ${_symtab_libs})
 
     # Add symbol table to xlean (generated above)
     target_sources(xlean PRIVATE ${WASM_SYMTAB_FILE})
@@ -414,6 +555,14 @@ if(EMSCRIPTEN)
         ${STAGE0_INIT_LIB}
         ${LEANRT_LIB}
     )
+    if(TARGET sparkle_wasm)
+        # wasm_symbol_table.cpp references initialize_sparkle_* — needs
+        # the Sparkle archive to resolve those symbols.
+        target_link_options(test_wasm_node PRIVATE
+            "SHELL: -Wl,--whole-archive ${CMAKE_BINARY_DIR}/libsparkle_wasm.a -Wl,--no-whole-archive"
+        )
+        add_dependencies(test_wasm_node sparkle_wasm)
+    endif()
     target_compile_options(test_wasm_node PRIVATE -fPIC -g2)
     target_link_options(test_wasm_node PRIVATE
         "SHELL: -fwasm-exceptions"

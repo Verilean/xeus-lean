@@ -14,7 +14,7 @@
 import { Page, Locator, expect } from '@playwright/test';
 import { browserSerializer, buildOptions, SerializeOptions } from './dom-serialize';
 
-const KERNEL_BOOT_TIMEOUT = 120_000;
+const KERNEL_BOOT_TIMEOUT = 300_000;
 const CELL_EXEC_TIMEOUT = 60_000;
 
 /**

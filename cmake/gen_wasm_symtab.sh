@@ -14,7 +14,7 @@ shift 2
 SYMFILE=$(mktemp)
 "$LLVM_NM" --defined-only "$@" 2>/dev/null \
     | awk '/^[0-9a-f]+ T / {print $3}' \
-    | grep -E '^(initialize_|lean_|l_initFn)|___boxed$' \
+    | grep -E '^(initialize_|lean_|l_initFn|lp_|sparkle_)|___boxed$' \
     | sort -u > "$SYMFILE"
 SYM_COUNT=$(wc -l < "$SYMFILE" | tr -d ' ')
 
