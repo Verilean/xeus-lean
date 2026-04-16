@@ -411,6 +411,27 @@ extern \"C\" LEAN_EXPORT lean_obj_res lean_uv_udp_cancel_recv(b_obj_arg socket) 
         message(STATUS "ir_interpreter.cpp already patched for WASM symbol lookup")
     endif()
 
+    # Patch ir_interpreter.cpp: Add stderr trace to push_frame so we can
+    # see every interpreter call entry. Hangs in WASM are otherwise
+    # invisible; this prints the function name being entered.
+    file(READ "${LEAN4_SRC_DIR}/src/library/ir_interpreter.cpp" _interp_cpp2)
+    string(FIND "${_interp_cpp2}" "WASM_TRACE_PUSH_FRAME" _trace_patched)
+    if(_trace_patched EQUAL -1)
+        # Inject <cstdio> include first (needed for fputs/stderr).
+        string(REPLACE
+            "#include \"library/ir_interpreter.h\""
+            "#include <cstdio>\n#include \"library/ir_interpreter.h\""
+            _interp_cpp2 "${_interp_cpp2}")
+        string(REPLACE
+            "m_call_stack.emplace_back(decl_fun_id(d), arg_bp, m_jp_stack.size());"
+            "// WASM_TRACE_PUSH_FRAME: log every interpreter call entry.\n#ifdef LEAN_EMSCRIPTEN\n        { static unsigned long n=0; if((++n & 0xFF) == 1 || n < 200) { sstream s; s << \"[interp push_frame #\" << n << \"] \" << decl_fun_id(d) << \" (depth=\" << m_call_stack.size() << \")\\n\"; std::fputs(s.str().c_str(), stderr); } }\n#endif\n        m_call_stack.emplace_back(decl_fun_id(d), arg_bp, m_jp_stack.size());"
+            _interp_cpp2 "${_interp_cpp2}")
+        file(WRITE "${LEAN4_SRC_DIR}/src/library/ir_interpreter.cpp" "${_interp_cpp2}")
+        message(STATUS "Patched ir_interpreter.cpp: added push_frame trace")
+    else()
+        message(STATUS "ir_interpreter.cpp push_frame trace already added")
+    endif()
+
     # --- Libuv stubs for WASM ---
     # io.cpp and net_addr.cpp reference libuv types/functions in code paths
     # not guarded by #ifndef LEAN_EMSCRIPTEN. We provide a minimal stub uv.h

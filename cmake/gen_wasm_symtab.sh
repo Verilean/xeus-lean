@@ -12,10 +12,13 @@ OUTPUT="$2"
 shift 2
 
 SYMFILE=$(mktemp)
+# Emit "<type> <name>" pairs (T=function, D/B=data) so we can declare
+# them with the correct C++ extern type. Mixing them up causes wasm-ld
+# "symbol type mismatch" errors at link time.
 "$LLVM_NM" --defined-only "$@" 2>/dev/null \
-    | awk '/^[0-9a-f]+ T / {print $3}' \
-    | grep -E '^(initialize_|lean_|l_initFn|lp_|sparkle_)|___boxed$' \
-    | sort -u > "$SYMFILE"
+    | awk '/^[0-9a-f]+ [TDB] / {print $2 " " $3}' \
+    | awk '$2 ~ /^(initialize_|lean_|l_|lp_|sparkle_)/ || $2 ~ /___boxed$/ {print}' \
+    | sort -u -k2 > "$SYMFILE"
 SYM_COUNT=$(wc -l < "$SYMFILE" | tr -d ' ')
 
 echo "Generating WASM symbol table with $SYM_COUNT symbols" >&2
@@ -29,7 +32,10 @@ cat > "$OUTPUT" << 'HEADER'
 extern "C" {
 HEADER
 
-awk '{printf "    extern void %s();\n", $0}' "$SYMFILE" >> "$OUTPUT"
+awk '{
+  if ($1 == "T") printf "    extern void %s();\n", $2;
+  else           printf "    extern void* %s;\n",  $2;
+}' "$SYMFILE" >> "$OUTPUT"
 
 cat >> "$OUTPUT" << 'MIDDLE'
 }
@@ -42,7 +48,10 @@ struct wasm_sym_entry {
 static const wasm_sym_entry g_wasm_sym_table[] = {
 MIDDLE
 
-awk '{printf "    {\"%s\", (void*)&%s},\n", $0, $0}' "$SYMFILE" >> "$OUTPUT"
+awk '{
+  if ($1 == "T") printf "    {\"%s\", (void*)&%s},\n", $2, $2;
+  else           printf "    {\"%s\", (void*)&%s},\n", $2, $2;
+}' "$SYMFILE" >> "$OUTPUT"
 
 cat >> "$OUTPUT" << FOOTER
     {nullptr, nullptr}
@@ -51,6 +60,7 @@ cat >> "$OUTPUT" << FOOTER
 static const size_t g_wasm_sym_table_size = ${SYM_COUNT};
 
 // Binary search (table is sorted by name)
+#include <cstdio>
 extern "C" void* wasm_lookup_symbol(const char* name) {
     size_t lo = 0, hi = g_wasm_sym_table_size;
     while (lo < hi) {
@@ -60,6 +70,9 @@ extern "C" void* wasm_lookup_symbol(const char* name) {
         if (cmp < 0) lo = mid + 1;
         else hi = mid;
     }
+    // DEBUG: log misses so we can see what the interpreter wanted but
+    // didn't find. Surfaces in the browser console as a stderr line.
+    std::fprintf(stderr, "[wasm_lookup_symbol] MISS: %s\n", name);
     return nullptr;
 }
 FOOTER

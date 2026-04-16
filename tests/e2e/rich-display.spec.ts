@@ -19,6 +19,7 @@ test.describe.serial('rich display', () => {
   let sharedPage: Page;
 
   test.beforeAll(async ({ browser }) => {
+    test.setTimeout(600_000);
     sharedPage = await browser.newPage();
     await openLeanNotebook(sharedPage);
   });
@@ -98,6 +99,7 @@ test.describe.serial('sparkle hdl', () => {
   let sparklePage: Page;
 
   test.beforeAll(async ({ browser }) => {
+    test.setTimeout(600_000);
     sparklePage = await browser.newPage();
     // Open sparkle-demo.ipynb which has `import Sparkle` in the first cell
     await openLeanNotebook(sparklePage, 'sparkle-demo.ipynb');

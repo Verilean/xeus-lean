@@ -174,10 +174,34 @@ if(EMSCRIPTEN)
         string(REGEX MATCHALL "#include[^\n]*\n" _barrier_includes "${_barrier_body}")
         string(REGEX REPLACE "#include[^\n]*\n" "" _barrier_body_no_inc "${_barrier_body}")
         string(JOIN "" _barrier_inc_str ${_barrier_includes})
+        # WASM debug: rename the upstream functions to *_impl so we can
+        # wrap them with call-counter logging that prints to stderr.
+        # Useful for diagnosing simulation hangs in the WASM REPL.
+        string(REPLACE "sparkle_cache_get" "sparkle_cache_get_impl" _barrier_body_no_inc "${_barrier_body_no_inc}")
+        string(REPLACE "sparkle_eval_at" "sparkle_eval_at_impl" _barrier_body_no_inc "${_barrier_body_no_inc}")
         set(SPARKLE_C_CPP "${CMAKE_BINARY_DIR}/sparkle_barrier.cpp")
-        file(WRITE "${SPARKLE_C_CPP}" "${_barrier_inc_str}\nextern \"C\" {\n${_barrier_body_no_inc}\n}\n")
+        file(WRITE "${SPARKLE_C_CPP}"
+"${_barrier_inc_str}
+#include <cstdio>
+extern \"C\" {
+${_barrier_body_no_inc}
+
+// Wrappers that print every Nth call to stderr — surfaces in the
+// browser console as `[sparkle_eval_at] call #...`.
+LEAN_EXPORT lean_obj_res sparkle_cache_get(b_lean_obj_arg ref, b_lean_obj_arg t_obj, lean_obj_arg fallback) {
+    static unsigned long n = 0;
+    if ((++n & 0xFFF) == 1) std::fprintf(stderr, \"[sparkle_cache_get] call #%lu\\n\", n);
+    return sparkle_cache_get_impl(ref, t_obj, fallback);
+}
+LEAN_EXPORT lean_obj_res sparkle_eval_at(b_lean_obj_arg signal_val, b_lean_obj_arg t, lean_obj_arg world) {
+    static unsigned long n = 0;
+    if ((++n & 0x3F) == 1) std::fprintf(stderr, \"[sparkle_eval_at] call #%lu (t=%lu)\\n\", n, lean_unbox(t));
+    return sparkle_eval_at_impl(signal_val, t, world);
+}
+}
+")
         list(APPEND SPARKLE_WASM_SOURCES "${SPARKLE_C_CPP}")
-        message(STATUS "Including sparkle_barrier.cpp in xlean for WASM FFI")
+        message(STATUS "Including sparkle_barrier.cpp + diagnostic wrappers in xlean for WASM FFI")
     endif()
     set(_excluded_init_syms "")
     if(EXISTS "${SPARKLE_IR_DIR}")
