@@ -31,6 +31,9 @@ if [ ! -d "$SRC" ]; then
 fi
 
 mkdir -p "$OUT"
+# Resolve to absolute paths because we `cd "$SRC"` before tar/zstd.
+SRC=$(cd "$SRC" && pwd)
+OUT=$(cd "$OUT" && pwd)
 
 # Modules to bundle. Each entry is the module name (= top-level dir name in $SRC).
 # Hesper is optional — it's only present when the hesper submodule + WASM build
