@@ -114,6 +114,16 @@ jobs:
     - name: Build Lean REPL (lake)
       run: lake build REPL Display WasmRepl
 
+    - name: Build Sparkle example (lake) — produces IR .cpp files for WASM
+      run: |
+        # WASM xlean target links libsparkle_wasm.a built from
+        # examples/sparkle/.lake/.../*.cpp. Without this step, the link
+        # fails with "symbol exported via --export not found:
+        # sparkle_cache_get / sparkle_eval_at".
+        cd examples/sparkle
+        lake update
+        lake build SparkleDemo || echo "WARN: Sparkle build failed; xlean link may fail"
+
     - name: Configure WASM build (emcmake)
       run: |
         pixi run -e wasm-build emcmake cmake -S . -B wasm-build \
