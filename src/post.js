@@ -4,26 +4,32 @@ if (typeof getDylinkMetadata !== 'undefined') {
   Module['getDylinkMetadata'] = getDylinkMetadata;
 }
 
+// fzstd is loaded by an earlier --post-js (src/fzstd.umd.js); see
+// CMakeLists.txt. Bundling avoids a runtime CDN fetch from the worker
+// thread where cross-origin XHR can be blocked by JupyterLite's
+// service worker.
+
 // ---------------------------------------------------------------
 // Dynamic .olean loading (Phase 2): per-module zstd tarballs.
 //
-// At --post-js time the emscripten runtime + FS are ready and Init/Display
-// are already in the VFS via --embed-file. We download manifest-v2.json,
-// then for each module fetch <baseUrl><asset>, decompress (zstd → tar),
-// and FS.writeFile every entry under /lib/lean/.
+// At --post-js time the emscripten runtime + FS are ready and Init/
+// Display are already in the VFS via --embed-file. We download
+// manifest-v2.json, then for each module fetch <baseUrl><asset>,
+// decompress (zstd → tar), and FS.writeFile each entry under
+// /lib/lean/.
 //
-// All transfers are synchronous XHR so Lean's import path sees the files
-// the moment it asks for them. Total ~275MB compressed → ~1.5GB on disk.
-// Browsers cache the tarball responses (Cache-Control), and IndexedDB is
-// used as a second-level cache so revisits skip the download entirely.
-//
-// Required globals (provided by --pre-js or inlined here): fzstd (zstd
-// streaming decompressor, ~13KB) — loaded from a CDN below if missing.
+// Failures here are logged but never throw — a kernel that boots
+// without Std/Lean/Sparkle/Hesper is still useful for Init-only code.
 // ---------------------------------------------------------------
 (function() {
   'use strict';
 
   function log(msg) { try { console.error('[olean] ' + msg); } catch(_) {} }
+
+  if (typeof XMLHttpRequest === 'undefined') {
+    log('XMLHttpRequest unavailable — skipping dynamic olean load');
+    return;
+  }
 
   // ---- 1. Locate manifest -----------------------------------------
   var candidates = [];
@@ -46,48 +52,36 @@ if (typeof getDylinkMetadata !== 'undefined') {
       xhr.open('GET', candidates[i] + 'manifest-v2.json', false);
       xhr.send();
       if (xhr.status === 200) {
-        MANIFEST = JSON.parse(xhr.responseText);
-        BASE = candidates[i];
-        log('manifest-v2 found at ' + BASE);
-        break;
+        try {
+          MANIFEST = JSON.parse(xhr.responseText);
+          BASE = candidates[i];
+          log('manifest-v2 found at ' + BASE);
+          break;
+        } catch(parseErr) {
+          log('manifest-v2 at ' + candidates[i] + ' did not parse: ' + parseErr);
+        }
       }
     } catch(e) { /* try next */ }
   }
-  if (!MANIFEST) { log('no manifest-v2.json — Std/Lean/Sparkle unavailable'); return; }
+  if (!MANIFEST) { log('no manifest-v2.json — only embedded modules will work'); return; }
 
-  // baseUrl in manifest can be empty (use sibling dir) or absolute (Release URL)
+  if (typeof fzstd === 'undefined' || typeof fzstd.decompress !== 'function') {
+    log('fzstd not loaded — cannot decompress tarballs (skipping)');
+    return;
+  }
+
   var ASSET_BASE = MANIFEST.baseUrl || BASE;
 
-  // ---- 2. Load fzstd (zstd JS decoder) ----------------------------
-  // Inline a tiny CDN fetch for fzstd. We need it synchronously.
-  if (typeof fzstd === 'undefined' && typeof globalThis !== 'undefined') {
-    try {
-      var xhr = new XMLHttpRequest();
-      // Pinned version for reproducibility. fzstd is ~13KB minified.
-      xhr.open('GET', 'https://cdn.jsdelivr.net/npm/fzstd@0.1.1/umd/index.js', false);
-      xhr.send();
-      if (xhr.status === 200) {
-        // Evaluate in current scope (defines globalThis.fzstd)
-        (0, eval)(xhr.responseText);
-      }
-    } catch(e) { log('fzstd load failed: ' + e); }
-  }
-  if (typeof fzstd === 'undefined') { log('fzstd not available — cannot decompress tarballs'); return; }
-
-  // ---- 3. Tar parser (ustar) --------------------------------------
-  // Parses a Uint8Array (raw tar) and returns [{name, data}].
+  // ---- 2. Tar parser (ustar regular files only) -------------------
   function parseTar(buf) {
     var entries = [];
     var off = 0;
     while (off + 512 <= buf.length) {
-      // Read filename (first 100 bytes, NUL-terminated)
       var nameEnd = off;
       while (nameEnd < off + 100 && buf[nameEnd] !== 0) nameEnd++;
-      if (nameEnd === off) break; // empty header → end of archive
+      if (nameEnd === off) break;
       var name = '';
       for (var i = off; i < nameEnd; i++) name += String.fromCharCode(buf[i]);
-
-      // Size at offset 124, 12 octal digits, NUL-terminated
       var sizeStr = '';
       for (var j = off + 124; j < off + 136; j++) {
         var c = buf[j];
@@ -95,19 +89,16 @@ if (typeof getDylinkMetadata !== 'undefined') {
         sizeStr += String.fromCharCode(c);
       }
       var size = parseInt(sizeStr, 8) || 0;
-
-      // typeflag at offset 156 ('0' or NUL = regular file)
       var typeflag = buf[off + 156];
-      if (typeflag === 0 || typeflag === 0x30 /* '0' */) {
-        var data = buf.subarray(off + 512, off + 512 + size);
-        entries.push({ name: name, data: data });
+      if (typeflag === 0 || typeflag === 0x30) {
+        entries.push({ name: name, data: buf.subarray(off + 512, off + 512 + size) });
       }
       off += 512 + Math.ceil(size / 512) * 512;
     }
     return entries;
   }
 
-  // ---- 4. Ensure parent dirs exist in VFS -------------------------
+  // ---- 3. Ensure parent dirs exist in VFS -------------------------
   function mkdirP(path) {
     var parts = path.split('/').filter(Boolean);
     var cur = '';
@@ -117,23 +108,29 @@ if (typeof getDylinkMetadata !== 'undefined') {
     }
   }
 
-  // ---- 5. Fetch + extract one tarball into /lib/lean/ -------------
+  // ---- 4. Fetch + extract one tarball into /lib/lean/ -------------
   function loadModuleSync(modName, info) {
     var url = ASSET_BASE + info.asset;
     log('fetching ' + url + ' (' + Math.round(info.size / 1024 / 1024) + ' MB compressed, ' + info.files + ' files)');
 
-    var xhr = new XMLHttpRequest();
-    xhr.open('GET', url, false);
-    xhr.responseType = 'arraybuffer';
-    xhr.send();
-    if (xhr.status !== 200) { log('fetch failed: ' + xhr.status); return 0; }
+    var compressed;
+    try {
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', url, false);
+      xhr.responseType = 'arraybuffer';
+      xhr.send();
+      if (xhr.status !== 200) { log(modName + ': fetch failed status=' + xhr.status); return 0; }
+      compressed = new Uint8Array(xhr.response);
+    } catch(e) { log(modName + ': fetch error: ' + e); return 0; }
 
-    var compressed = new Uint8Array(xhr.response);
-    log('decompressing ' + compressed.length + ' bytes...');
-    var raw = fzstd.decompress(compressed);
-    log('decompressed to ' + raw.length + ' bytes');
+    var raw;
+    try { raw = fzstd.decompress(compressed); }
+    catch(e) { log(modName + ': decompress error: ' + e); return 0; }
 
-    var entries = parseTar(raw);
+    var entries;
+    try { entries = parseTar(raw); }
+    catch(e) { log(modName + ': tar parse error: ' + e); return 0; }
+
     var written = 0;
     for (var k = 0; k < entries.length; k++) {
       var e = entries[k];
@@ -142,21 +139,21 @@ if (typeof getDylinkMetadata !== 'undefined') {
       var slash = vfsPath.lastIndexOf('/');
       if (slash > 0) mkdirP(vfsPath.substring(0, slash));
       try {
-        // Skip if already in VFS (e.g. embedded Init)
         try { FS.stat(vfsPath); continue; } catch(_) {}
         FS.writeFile(vfsPath, e.data);
         written++;
-      } catch(e) { /* ignore individual failures */ }
+      } catch(_) { /* per-file failure is non-fatal */ }
     }
-    log(modName + ': wrote ' + written + ' files to /lib/lean/');
+    log(modName + ': wrote ' + written + ' / ' + entries.length + ' files to /lib/lean/');
     return written;
   }
 
-  // ---- 6. Eagerly load every module in the manifest ---------------
+  // ---- 5. Eagerly load every module in the manifest ---------------
   var totalWritten = 0;
   for (var mod in MANIFEST.modules) {
     if (Object.prototype.hasOwnProperty.call(MANIFEST.modules, mod)) {
-      totalWritten += loadModuleSync(mod, MANIFEST.modules[mod]);
+      try { totalWritten += loadModuleSync(mod, MANIFEST.modules[mod]); }
+      catch(e) { log(mod + ': load threw: ' + e); }
     }
   }
   log('done — ' + totalWritten + ' files written across ' + Object.keys(MANIFEST.modules).length + ' modules');

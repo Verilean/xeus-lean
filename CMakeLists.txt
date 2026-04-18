@@ -353,6 +353,10 @@ ${_init_stub_decls}}
 
     target_link_options(xlean
         PUBLIC "SHELL: --pre-js ${CMAKE_CURRENT_SOURCE_DIR}/src/pre.js"
+        # Order matters: fzstd defines `self.fzstd`/`globalThis.fzstd` and
+        # post.js consumes it. Both files end up as separate scripts inside
+        # the emscripten worker bundle and run in declaration order.
+        PUBLIC "SHELL: --post-js ${CMAKE_CURRENT_SOURCE_DIR}/src/fzstd.umd.js"
         PUBLIC "SHELL: --post-js ${CMAKE_CURRENT_SOURCE_DIR}/src/post.js"
     )
 
