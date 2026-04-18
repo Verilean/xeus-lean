@@ -610,21 +610,16 @@ ${_init_stub_decls}}
     if(LEAN_TOOLCHAIN_DIR AND EXISTS "${LEAN_OLEAN_SRC}/Init.olean")
         set(TEST_OLEAN_STAGING "${CMAKE_BINARY_DIR}/test_olean_staging/lib/lean")
         file(MAKE_DIRECTORY "${TEST_OLEAN_STAGING}")
-        foreach(_ext olean olean.private)
-            if(EXISTS "${LEAN_OLEAN_SRC}/Init.${_ext}")
-                file(COPY "${LEAN_OLEAN_SRC}/Init.${_ext}" DESTINATION "${TEST_OLEAN_STAGING}/")
-            endif()
-        endforeach()
-        file(GLOB_RECURSE _TEST_INIT_FILES
-            RELATIVE "${LEAN_OLEAN_SRC}"
-            "${LEAN_OLEAN_SRC}/Init/*.olean"
-            "${LEAN_OLEAN_SRC}/Init/*.olean.private")
-        list(FILTER _TEST_INIT_FILES EXCLUDE REGEX "\\.server$")
-        foreach(_f ${_TEST_INIT_FILES})
-            get_filename_component(_dir "${_f}" DIRECTORY)
-            file(MAKE_DIRECTORY "${TEST_OLEAN_STAGING}/${_dir}")
-            file(COPY "${LEAN_OLEAN_SRC}/${_f}" DESTINATION "${TEST_OLEAN_STAGING}/${_dir}/")
-        endforeach()
+        # Use shell `cp` instead of cmake file(COPY) which is O(n) syscalls
+        # and can take 15+ minutes on slow filesystems for 2K+ files.
+        # Includes .olean (kernel), .olean.server (server data), .olean.private,
+        # and .ir / .ilean — all needed for module imports in the WASM REPL.
+        execute_process(
+            COMMAND sh -c "cp -f \"${LEAN_OLEAN_SRC}\"/Init.olean \"${LEAN_OLEAN_SRC}\"/Init.olean.server \"${LEAN_OLEAN_SRC}\"/Init.olean.private \"${LEAN_OLEAN_SRC}\"/Init.ir \"${LEAN_OLEAN_SRC}\"/Init.ilean \"${TEST_OLEAN_STAGING}/\" 2>/dev/null; cp -rf \"${LEAN_OLEAN_SRC}/Init\" \"${TEST_OLEAN_STAGING}/\""
+            RESULT_VARIABLE _cp_rc)
+        if(_cp_rc)
+            message(WARNING "Init staging copy failed: rc=${_cp_rc}")
+        endif()
         target_link_options(test_wasm_node
             PUBLIC "SHELL: --embed-file ${CMAKE_BINARY_DIR}/test_olean_staging@/")
     endif()

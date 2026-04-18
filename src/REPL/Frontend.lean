@@ -88,15 +88,20 @@ def processInput (input : String) (cmdState? : Option Command.State)
   IO.eprintln "[processInput] initSearchPath done"
   enableInitializersExecution
   let fileName   := fileName.getD "<input>"
-  -- Prepend `import Display` so that #html/#latex/#md/#svg/#json
-  -- macros and Display.* helpers are available without the user
-  -- explicitly importing them. The Display.olean must be embedded
-  -- in the WASM VFS alongside Init.olean for this to work.
-  -- Auto-import Display so rich output (#html/#latex/#svg etc.) works
-  -- without explicit imports. Sparkle is NOT auto-imported because
-  -- loading 26 modules takes significant time; users should write
-  -- `import Sparkle` explicitly when they need HDL features.
-  let input := if cmdState?.isNone then "import Display\n" ++ input else input
+  -- Auto-import Display + Sparkle on the first call so the user does not
+  -- need to write any `import` statements. We must do this here because
+  -- WasmRepl.execute auto-chains subsequent calls on the existing env to
+  -- work around a WASM memory64 bug in Lean's importModulesCore — once
+  -- the first cell runs, no further `import` is allowed. Auto-importing
+  -- Sparkle adds ~26 modules (slower first-cell load) but makes the HDL
+  -- features available everywhere. If Sparkle.olean isn't present in the
+  -- VFS the import will silently fail and the rest still works.
+  let hasSparkle ← (System.FilePath.mk "/lib/lean/Sparkle.olean").pathExists
+  let input :=
+    if cmdState?.isNone then
+      let imports := if hasSparkle then "import Display\nimport Sparkle\n" else "import Display\n"
+      imports ++ input
+    else input
   let inputCtx   := Parser.mkInputContext input fileName
 
   match cmdState? with

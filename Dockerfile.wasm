@@ -104,3 +104,4 @@ COPY --from=builder /opt/xeus-lean/_output /app/dist
 EXPOSE 8888
 
 CMD ["python", "-m", "http.server", "8888", "--directory", "/app/dist"]
+# cache-bust 1776418690

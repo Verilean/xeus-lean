@@ -39,13 +39,25 @@ def createState : IO (IO.Ref REPL.State) :=
     - stateRef: mutable reference to the REPL state
     - code: the Lean code to execute
     - envId: environment ID to use (from a previous execution)
-    - hasEnv: 1 if envId should be used, 0 for fresh environment
+    - hasEnv: 1 if envId should be used, 0 to auto-chain on the latest env
     Returns: JSON string with the result
--/
+
+    NOTE: WASM-specific behavior. In native Lean, `hasEnv=0` means "create a
+    fresh environment by reparsing the header (import Display)". In WASM that
+    path crashes on the 5th call inside `importModulesCore` (memory access out
+    of bounds — root cause unknown, likely a Lean runtime bug specific to
+    memory64). Workaround: the first call (when `cmdStates` is empty) creates
+    env 0 by parsing the header; every subsequent `hasEnv=0` call auto-chains
+    on the latest env, skipping `processHeader` entirely. This also matches
+    Jupyter notebook semantics — each cell sees the previous cell's defs. -/
 @[export lean_wasm_repl_execute]
 def execute (stateRef : IO.Ref REPL.State) (code : String) (envId : UInt32) (hasEnv : UInt8) : IO String := do
   IO.eprintln s!"[WasmRepl] execute: code='{code.take 50}' envId={envId} hasEnv={hasEnv}"
-  let env : Option Nat := if hasEnv.toNat == 1 then some envId.toNat else none
+  let state ← stateRef.get
+  let env : Option Nat :=
+    if hasEnv.toNat == 1 then some envId.toNat
+    else if state.cmdStates.size > 0 then some (state.cmdStates.size - 1)
+    else none
 
   let cmd : REPL.Command := {
     cmd := code,
@@ -56,7 +68,6 @@ def execute (stateRef : IO.Ref REPL.State) (code : String) (envId : UInt32) (has
   }
 
   IO.eprintln s!"[WasmRepl] calling runCommand (env={env})"
-  let state ← stateRef.get
   let result ← runCommand cmd |>.run state
   IO.eprintln "[WasmRepl] runCommand returned"
 

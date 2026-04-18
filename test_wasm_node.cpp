@@ -207,6 +207,86 @@ int main() {
     std::cerr << "[TEST] Step 6: lean_io_mark_end_initialization" << std::endl;
     lean_io_mark_end_initialization();
 
+    // Step 6b: Load olean files into VFS.
+    // In WASM, getenv may not work. Use emscripten_run_script to check
+    // for olean dirs directly via Node.js fs.existsSync.
+#ifdef __EMSCRIPTEN__
+    {
+        // Try known olean directory paths
+        const char* olean_dir = nullptr;
+        static const char* candidates[] = {
+            "/opt/xeus-lean/.pixi/envs/wasm-host/share/jupyter/olean",
+            "../.pixi/envs/wasm-host/share/jupyter/olean",
+            nullptr
+        };
+        // Also load Display.olean which is built separately
+        static const char* extra_dirs[] = {
+            "/opt/xeus-lean/.lake/build/lib/lean",
+            "../.lake/build/lib/lean",
+            nullptr
+        };
+        for (int i = 0; extra_dirs[i]; i++) {
+            char check[512];
+            snprintf(check, sizeof(check),
+                "require('fs').existsSync('%s/Display.olean') ? 1 : 0", extra_dirs[i]);
+            if (emscripten_run_script_int(check)) {
+                // Load Display.olean + Display.ir etc. into VFS
+                char load[1024];
+                snprintf(load, sizeof(load),
+                    "var fs=require('fs'),p='%s';\n"
+                    "var exts=['olean','olean.server','olean.private','ir','ilean'];\n"
+                    "var c=0;\n"
+                    "for(var i=0;i<exts.length;i++){\n"
+                    "  var f=p+'/Display.'+exts[i];\n"
+                    "  if(fs.existsSync(f)){try{FS.writeFile('/lib/lean/Display.'+exts[i],new Uint8Array(fs.readFileSync(f)));c++;}catch(e){}}\n"
+                    "}\n"
+                    "c\n", extra_dirs[i]);
+                int loaded = emscripten_run_script_int(load);
+                std::cerr << "[TEST] Loaded " << loaded << " Display files from " << extra_dirs[i] << std::endl;
+                break;
+            }
+        }
+        for (int i = 0; candidates[i]; i++) {
+            char check[512];
+            snprintf(check, sizeof(check),
+                "require('fs').existsSync('%s') ? 1 : 0", candidates[i]);
+            if (emscripten_run_script_int(check)) {
+                olean_dir = candidates[i];
+                break;
+            }
+        }
+        if (olean_dir) {
+            std::cerr << "[TEST] Step 6b: Loading olean files from " << olean_dir << std::endl;
+            char script[4096];
+            snprintf(script, sizeof(script),
+                "var fs = require('fs'), path = require('path');\n"
+                "function loadDir(dir, vfsBase) {\n"
+                "  var count = 0;\n"
+                "  var entries = fs.readdirSync(dir, {withFileTypes: true});\n"
+                "  for (var i = 0; i < entries.length; i++) {\n"
+                "    var e = entries[i];\n"
+                "    var full = path.join(dir, e.name);\n"
+                "    var vfs = vfsBase + '/' + e.name;\n"
+                "    if (e.isDirectory()) {\n"
+                "      try { FS.mkdir(vfs); } catch(ex) {}\n"
+                "      count += loadDir(full, vfs);\n"
+                "    } else if (/\\.(olean|olean\\.server|olean\\.private|ir|ilean)$/.test(e.name)) {\n"
+                "      try {\n"
+                "        try { FS.stat(vfs); } catch(_) {\n"
+                "          FS.writeFile(vfs, new Uint8Array(fs.readFileSync(full))); count++;\n"
+                "        }\n"
+                "      } catch(ex) {}\n"
+                "    }\n"
+                "  }\n"
+                "  return count;\n"
+                "}\n"
+                "loadDir('%s', '/lib/lean')\n", olean_dir);
+            int count = emscripten_run_script_int(script);
+            std::cerr << "[TEST] Loaded olean files: " << count << std::endl;
+        }
+    }
+#endif
+
     // Step 7: Initialize REPL search path
     std::cerr << "[TEST] Step 7: lean_wasm_repl_init" << std::endl;
     try {
@@ -268,6 +348,14 @@ int main() {
         }
     };
 
+    // Stress test: WasmRepl auto-chains hasEnv=0 calls on the latest env so
+    // processHeader runs only once, working around the WASM 5th-fresh-import
+    // bug. Run many calls to verify the env-reuse path is stable.
+    for (int i = 0; i < 10; i++) {
+        std::cerr << "[TEST] Step 9_chain[" << i << "]: #check Nat" << std::endl;
+        run_cmd("#check Nat (chain)", "#check Nat");
+    }
+
     std::cerr << "[TEST] Step 9a: #check Nat" << std::endl;
     run_cmd("#check Nat", "#check Nat");
 
@@ -282,6 +370,62 @@ int main() {
 
     std::cerr << "[TEST] Step 9e: def x := 1" << std::endl;
     run_cmd("def x := 1", "def x := 1");
+
+    // Native→interpreter callback tests.
+    // These test whether lean_apply_1 on an interpreter-created closure
+    // works when called from native compiled code.
+    std::cerr << "\n[TEST] === Native↔Interpreter Callback Tests ===" << std::endl;
+
+    std::cerr << "[TEST] Step 10a: pure closure application" << std::endl;
+    run_cmd("#eval (fun x : Nat => x + x) 3",
+            "#eval (fun x : Nat => x + x) 3");
+
+    std::cerr << "[TEST] Step 10b: List.length (pure native)" << std::endl;
+    run_cmd("#eval [1, 2, 3].length",
+            "#eval [1, 2, 3].length");
+
+    std::cerr << "[TEST] Step 10c: List.map with interpreter closure" << std::endl;
+    run_cmd("#eval (List.range 3).map (fun x : Nat => x)",
+            "#eval (List.range 3).map (fun x : Nat => x)");
+
+    std::cerr << "[TEST] Step 10d: List.map with arithmetic closure" << std::endl;
+    run_cmd("#eval (List.range 3).map (fun x : Nat => x * 2)",
+            "#eval (List.range 3).map (fun x : Nat => x * 2)");
+
+    std::cerr << "[TEST] Step 10e: IO.Ref + closure (unsafeIO pattern)" << std::endl;
+    run_cmd("#eval do let r ← IO.mkRef (0 : Nat); r.set 42; r.get",
+            "#eval do let r ← IO.mkRef (0 : Nat); r.set 42; r.get");
+
+    std::cerr << "[TEST] Step 10f: unsafeIO with closure" << std::endl;
+    run_cmd("#eval unsafeIO (do let r ← IO.mkRef (0 : Nat); r.set 42; return (← r.get))",
+            "#eval unsafeIO (do let r ← IO.mkRef (0 : Nat); r.set 42; return (← r.get))");
+
+    // Sparkle tests — auto-imported on first call by Frontend.lean.
+    // No `import Sparkle` line here because env-reuse means imports only
+    // fire on the first call.
+    std::cerr << "\n[TEST] === Sparkle Simulation Tests ===" << std::endl;
+
+    std::cerr << "[TEST] Step 11a: simple eval (Sparkle is auto-imported)" << std::endl;
+    run_cmd("Sparkle eval",
+            "#eval IO.println \"sparkle: ok\"");
+
+    std::cerr << "[TEST] Step 11b: Signal.const + sample" << std::endl;
+    run_cmd("Signal.const sample",
+            "open Sparkle.Core.Domain Sparkle.Core.Signal\n"
+            "def s : Signal defaultDomain (BitVec 4) := \xe2\x9f\xa8" "fun _ => 7#4" "\xe2\x9f\xa9\n"
+            "#eval IO.println s!\"sparkle: {s.sample 1}\"");
+
+    std::cerr << "[TEST] Step 11c: Signal.register (no feedback)" << std::endl;
+    run_cmd("Signal.register",
+            "open Sparkle.Core.Domain Sparkle.Core.Signal\n"
+            "def r := Signal.register 5#4 " "\xe2\x9f\xa8" "fun _ => 9#4" "\xe2\x9f\xa9\n"
+            "#eval IO.println s!\"sparkle: {r.sample 2}\"");
+
+    std::cerr << "[TEST] Step 11d: Signal.loop (feedback - THE hang test)" << std::endl;
+    run_cmd("Signal.loop",
+            "open Sparkle.Core.Domain Sparkle.Core.Signal\n"
+            "def counter := Signal.loop (fun s => Signal.register 0#4 (s.map (\xc2\xb7 + 1#4)))\n"
+            "#eval IO.println s!\"sparkle: {counter.val 0}\"");
 
     std::cerr << "[TEST] All steps completed successfully!" << std::endl;
     lean_dec(state_ref);

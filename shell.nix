@@ -17,7 +17,7 @@ pkgs.mkShell {
       jupyter
       jupyterlab
     ]))
-    nodejs
+    nodejs_24
     emscripten
     # Additional build dependencies
     nlohmann_json
