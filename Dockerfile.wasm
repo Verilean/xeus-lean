@@ -86,13 +86,18 @@ RUN mkdir -p notebooks && \
     find _output -name "xlean*" -ls && \
     cat _output/xeus/kernels.json
 
-# 7. Copy olean assets (Std/Lean/Sparkle) for dynamic loading
+# 7. Pack olean assets (Std/Lean/Sparkle) into per-module zstd tarballs.
+# Phase 2: replaces ~1.5GB of raw .olean files with ~275MB of compressed
+# tarballs. The runtime (src/post.js) fetches and extracts them.
+RUN apt-get update && apt-get install -y zstd && rm -rf /var/lib/apt/lists/*
 RUN PREFIX=$(pixi info -e wasm-host --json 2>/dev/null \
       | python3 -c "import sys,json; print(json.load(sys.stdin)['environments_info'][0]['prefix'])" \
       2>/dev/null || echo ".pixi/envs/wasm-host") && \
     if [ -d "$PREFIX/share/jupyter/olean" ]; then \
-      cp -r "$PREFIX/share/jupyter/olean" _output/xeus/wasm-host/olean && \
-      echo "Copied olean assets: $(find _output/xeus/wasm-host/olean -type f | wc -l) files"; \
+      mkdir -p _output/xeus/wasm-host/olean && \
+      bash scripts/pack-olean-modules.sh "$PREFIX/share/jupyter/olean" _output/xeus/wasm-host/olean "" && \
+      echo "Packed olean tarballs:" && \
+      ls -lh _output/xeus/wasm-host/olean/; \
     fi
 
 # --- Serve stage ---

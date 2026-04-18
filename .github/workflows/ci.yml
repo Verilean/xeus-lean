@@ -169,6 +169,21 @@ jobs:
       run: |
         node --experimental-wasm-memory64 wasm-build/test_wasm_node.js
 
+    - name: Pack olean modules into per-module zstd tarballs
+      run: |
+        sudo apt-get install -y zstd
+        PREFIX=$(pixi info -e wasm-host --json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['environments_info'][0]['prefix'])" 2>/dev/null || echo ".pixi/envs/wasm-host")
+        OLEAN_SRC="$PREFIX/share/jupyter/olean"
+        if [ ! -d "$OLEAN_SRC" ]; then
+          echo "WARNING: olean dir not found at $OLEAN_SRC — skipping"
+          exit 0
+        fi
+        mkdir -p _olean_packed
+        bash scripts/pack-olean-modules.sh "$OLEAN_SRC" _olean_packed ""
+        ls -lh _olean_packed/
+        echo "=== manifest-v2.json ==="
+        cat _olean_packed/manifest-v2.json
+
     - name: Build JupyterLite site
       run: |
         mkdir -p notebooks
@@ -184,6 +199,18 @@ jobs:
           --contents notebooks \
           --output-dir _output \
           --force
+
+    - name: Drop olean tarballs into JupyterLite output
+      run: |
+        if [ -d _olean_packed ]; then
+          mkdir -p _output/xeus/wasm-host/olean
+          cp _olean_packed/*.tar.zst _olean_packed/manifest-v2.json _output/xeus/wasm-host/olean/
+          echo "=== _output/xeus/wasm-host/olean/ ==="
+          ls -lh _output/xeus/wasm-host/olean/
+          du -sh _output/xeus/wasm-host/olean/
+          echo "=== Total _output size ==="
+          du -sh _output/
+        fi
 
     - name: Verify JupyterLite output
       run: |
