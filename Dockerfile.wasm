@@ -36,6 +36,17 @@ RUN lake build REPL Display WasmRepl
 RUN cd examples/sparkle && lake update && lake build SparkleDemo || \
     echo "WARNING: Sparkle build failed, continuing without Sparkle support"
 
+# Build Hesper WGSL DSL (Phase 1 — pure Lean, no FFI). The build wrapper
+# under hesper-wasm/ applies WASM-specific patches and a stripped lakefile
+# so the upstream submodule stays unmodified.
+RUN if [ -f hesper/Hesper.lean ]; then \
+      mkdir -p hesper-wasm/build && \
+      bash hesper-wasm/build-wasm.sh hesper hesper-wasm/build \
+        Hesper.WGSL.DSL Hesper.WGSL.Helpers Hesper.WGSL.Templates \
+        Hesper.WGSL.Shader Hesper.WGSL.Kernel \
+        || echo "WARNING: hesper-wasm build failed, continuing without Hesper"; \
+    else echo "Hesper submodule absent, skipping"; fi
+
 # Build WASM kernel
 # 1. Fix emscripten symlinks
 RUN pixi run -e wasm-build fix-emscripten-links || true
@@ -94,6 +105,9 @@ RUN PREFIX=$(pixi info -e wasm-host --json 2>/dev/null \
       | python3 -c "import sys,json; print(json.load(sys.stdin)['environments_info'][0]['prefix'])" \
       2>/dev/null || echo ".pixi/envs/wasm-host") && \
     if [ -d "$PREFIX/share/jupyter/olean" ]; then \
+      if [ -d hesper-wasm/build/Hesper ]; then \
+        ln -sf "$(realpath hesper-wasm/build/Hesper)" "$PREFIX/share/jupyter/olean/Hesper"; \
+      fi && \
       mkdir -p _output/xeus/wasm-host/olean && \
       bash scripts/pack-olean-modules.sh "$PREFIX/share/jupyter/olean" _output/xeus/wasm-host/olean "" && \
       echo "Packed olean tarballs:" && \

@@ -92,6 +92,8 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+      with:
+        submodules: recursive
 
     - name: Install Lean via elan
       run: |
@@ -123,6 +125,22 @@ jobs:
         cd examples/sparkle
         lake update
         lake build SparkleDemo || echo "WARN: Sparkle build failed; xlean link may fail"
+
+    - name: Build Hesper WGSL (lake, optional)
+      run: |
+        # Hesper is a git submodule. Phase 0/1 only builds the WGSL DSL
+        # subset (no FFI, no WebGPU, no GLFW). The build wrapper applies
+        # patches under hesper-wasm/patches/ and a stripped lakefile.
+        if [ -f hesper/Hesper.lean ]; then
+          mkdir -p hesper-wasm/build
+          bash hesper-wasm/build-wasm.sh hesper hesper-wasm/build \
+            Hesper.WGSL.DSL Hesper.WGSL.Helpers Hesper.WGSL.Templates \
+            Hesper.WGSL.Shader Hesper.WGSL.Kernel \
+            || echo "WARN: hesper-wasm build failed; Hesper module unavailable"
+          ls -la hesper-wasm/build 2>/dev/null | head -5 || true
+        else
+          echo "Hesper submodule not initialized; skipping"
+        fi
 
     - name: Configure WASM build (emcmake)
       run: |
@@ -187,6 +205,11 @@ jobs:
         if [ ! -d "$OLEAN_SRC" ]; then
           echo "WARNING: olean dir not found at $OLEAN_SRC — skipping"
           exit 0
+        fi
+        # Drop a symlink into OLEAN_SRC so the pack script picks up the
+        # Hesper submodule's WGSL oleans alongside Std/Lean/Sparkle.
+        if [ -d hesper-wasm/build/Hesper ]; then
+          ln -sf "$(realpath hesper-wasm/build/Hesper)" "$OLEAN_SRC/Hesper"
         fi
         mkdir -p _olean_packed
         bash scripts/pack-olean-modules.sh "$OLEAN_SRC" _olean_packed ""

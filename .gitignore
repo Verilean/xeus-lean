@@ -64,3 +64,7 @@ test_node.mjs
 
 # macOS
 .DS_Store
+
+# CI failure logs (downloaded by hand for diagnosis)
+actions.log
+hesper-wasm/build/

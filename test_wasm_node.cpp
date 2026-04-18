@@ -427,6 +427,21 @@ int main() {
             "def counter := Signal.loop (fun s => Signal.register 0#4 (s.map (\xc2\xb7 + 1#4)))\n"
             "#eval IO.println s!\"sparkle: {counter.val 0}\"");
 
+    // Hesper WGSL DSL tests — Hesper.WGSL.DSL is auto-imported by Frontend
+    // when /lib/lean/Hesper/WGSL/DSL.olean exists in the VFS.
+    // Phase 1 of the Hesper integration: pure-Lean WGSL DSL, no FFI.
+    std::cerr << "\n[TEST] === Hesper WGSL DSL Tests ===" << std::endl;
+
+    std::cerr << "[TEST] Step 12a: Hesper namespace available" << std::endl;
+    run_cmd("Hesper namespace",
+            "#eval IO.println \"hesper: ok\"");
+
+    std::cerr << "[TEST] Step 12b: build a small Exp and toWGSL it" << std::endl;
+    run_cmd("Hesper.WGSL Exp",
+            "open Hesper.WGSL\n"
+            "def e : Exp (.scalar .f32) := Exp.var \"x\"\n"
+            "#eval IO.println s!\"hesper: {e.toWGSL}\"");
+
     std::cerr << "[TEST] All steps completed successfully!" << std::endl;
     lean_dec(state_ref);
     return 0;

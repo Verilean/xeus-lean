@@ -88,18 +88,19 @@ def processInput (input : String) (cmdState? : Option Command.State)
   IO.eprintln "[processInput] initSearchPath done"
   enableInitializersExecution
   let fileName   := fileName.getD "<input>"
-  -- Auto-import Display + Sparkle on the first call so the user does not
-  -- need to write any `import` statements. We must do this here because
-  -- WasmRepl.execute auto-chains subsequent calls on the existing env to
-  -- work around a WASM memory64 bug in Lean's importModulesCore — once
-  -- the first cell runs, no further `import` is allowed. Auto-importing
-  -- Sparkle adds ~26 modules (slower first-cell load) but makes the HDL
-  -- features available everywhere. If Sparkle.olean isn't present in the
-  -- VFS the import will silently fail and the rest still works.
+  -- Auto-import Display + (when present) Sparkle and Hesper on the first
+  -- call. WasmRepl.execute auto-chains subsequent calls on the existing
+  -- env to work around a WASM memory64 bug in Lean's importModulesCore,
+  -- so once the first cell runs no further `import` is allowed. Each
+  -- pre-import is gated on the corresponding olean being in the VFS so
+  -- builds that ship without (e.g.) Hesper still work.
   let hasSparkle ← (System.FilePath.mk "/lib/lean/Sparkle.olean").pathExists
+  let hasHesper  ← (System.FilePath.mk "/lib/lean/Hesper/WGSL/DSL.olean").pathExists
   let input :=
     if cmdState?.isNone then
-      let imports := if hasSparkle then "import Display\nimport Sparkle\n" else "import Display\n"
+      let mut imports := "import Display\n"
+      if hasSparkle then imports := imports ++ "import Sparkle\n"
+      if hasHesper  then imports := imports ++ "import Hesper.WGSL.DSL\n"
       imports ++ input
     else input
   let inputCtx   := Parser.mkInputContext input fileName

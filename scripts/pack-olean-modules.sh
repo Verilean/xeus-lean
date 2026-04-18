@@ -33,15 +33,22 @@ fi
 mkdir -p "$OUT"
 
 # Modules to bundle. Each entry is the module name (= top-level dir name in $SRC).
-MODULES="Std Lean Sparkle"
+# Hesper is optional — it's only present when the hesper submodule + WASM build
+# wrapper produced staged oleans (see hesper-wasm/build-wasm.sh).
+MODULES="Std Lean Sparkle Hesper"
 
 # Build manifest as we go.
 MANIFEST_JSON='{"version":"v2","baseUrl":"'"$BASE_URL"'","modules":{'
 FIRST=1
 
 for MOD in $MODULES; do
-    if [ ! -e "$SRC/$MOD.olean" ]; then
-        echo "[pack] skipping $MOD: $SRC/$MOD.olean not found" >&2
+    # A module is present if EITHER the top-level `$MOD.olean` exists (the
+    # full umbrella, e.g. Std/Lean/Sparkle from elan toolchain) OR the
+    # submodule directory exists with at least one olean inside (partial
+    # build, e.g. Hesper limited to WGSL).
+    if [ ! -e "$SRC/$MOD.olean" ] && \
+       ! ([ -d "$SRC/$MOD" ] && find "$SRC/$MOD" -name '*.olean' -print -quit | grep -q .); then
+        echo "[pack] skipping $MOD: no $MOD.olean and no oleans under $MOD/" >&2
         continue
     fi
 
