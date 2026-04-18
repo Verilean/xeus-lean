@@ -98,9 +98,10 @@ def processInput (input : String) (cmdState? : Option Command.State)
   let hasHesper  ← (System.FilePath.mk "/lib/lean/Hesper/WGSL/DSL.olean").pathExists
   let input :=
     if cmdState?.isNone then
-      let mut imports := "import Display\n"
-      if hasSparkle then imports := imports ++ "import Sparkle\n"
-      if hasHesper  then imports := imports ++ "import Hesper.WGSL.DSL\n"
+      let imports :=
+        "import Display\n"
+        ++ (if hasSparkle then "import Sparkle\n" else "")
+        ++ (if hasHesper  then "import Hesper.WGSL.DSL\n" else "")
       imports ++ input
     else input
   let inputCtx   := Parser.mkInputContext input fileName
