@@ -77,7 +77,7 @@ for MOD in $MODULES; do
         for p in $PATTERNS; do echo "$p"; done
         printf '%s\n' $SUBTREE_FILES
     } | tar --create --files-from=- --owner=0 --group=0 --mtime='1970-01-01' \
-        | zstd -19 -T0 -o "$OUT_TAR" -f -q
+        | zstd -19 -T0 - -o "$OUT_TAR" -f -q
 
     SIZE=$(stat -c '%s' "$OUT_TAR")
     echo "[pack] $MOD: $SIZE bytes (zstd -19)" >&2
