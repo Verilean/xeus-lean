@@ -25,12 +25,16 @@ if [ ! -f "$HESPER_DIR/Hesper.lean" ]; then
     exit 1
 fi
 
+# Resolve to absolute paths because the script `cd "$HESPER_DIR"` later
+# and per-file references would break with relative paths after that.
+HESPER_DIR="$(cd "$HESPER_DIR" && pwd)"
+mkdir -p "$OUT_DIR"
+OUT_DIR="$(cd "$OUT_DIR" && pwd)"
+
 WRAP_DIR="$(cd "$(dirname "$0")" && pwd)"
 PATCH_DIR="$WRAP_DIR/patches"
 LAKEFILE_OVERRIDE="$WRAP_DIR/lakefile-wasm.lean"
 TOOLCHAIN_FILE="$(cd "$WRAP_DIR/.." && pwd)/lean-toolchain"
-
-mkdir -p "$OUT_DIR"
 
 # ------------------------------------------------------------------
 # 1. Save originals so we can restore even if `lake build` fails.

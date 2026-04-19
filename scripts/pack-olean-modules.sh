@@ -50,7 +50,7 @@ for MOD in $MODULES; do
     # submodule directory exists with at least one olean inside (partial
     # build, e.g. Hesper limited to WGSL).
     if [ ! -e "$SRC/$MOD.olean" ] && \
-       ! ([ -d "$SRC/$MOD" ] && find "$SRC/$MOD" -name '*.olean' -print -quit | grep -q .); then
+       ! ([ -d "$SRC/$MOD" ] && find -L "$SRC/$MOD" -name '*.olean' -print -quit | grep -q .); then
         echo "[pack] skipping $MOD: no $MOD.olean and no oleans under $MOD/" >&2
         continue
     fi
@@ -67,7 +67,7 @@ for MOD in $MODULES; do
             PATTERNS="$PATTERNS $MOD.$ext"
         fi
     done
-    SUBTREE_FILES=$(find "$MOD" \( \
+    SUBTREE_FILES=$(find -L "$MOD" \( \
         -name '*.olean' -o -name '*.olean.server' -o -name '*.olean.private' \
         -o -name '*.ir' -o -name '*.ilean' \) -type f 2>/dev/null || true)
 
@@ -79,7 +79,8 @@ for MOD in $MODULES; do
     {
         for p in $PATTERNS; do echo "$p"; done
         printf '%s\n' $SUBTREE_FILES
-    } | tar --create --files-from=- --owner=0 --group=0 --mtime='1970-01-01' \
+    } | tar --create --files-from=- --dereference \
+            --owner=0 --group=0 --mtime='1970-01-01' \
         | zstd -19 -T0 -f -q -c > "$OUT_TAR"
 
     SIZE=$(stat -c '%s' "$OUT_TAR")

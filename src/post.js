@@ -12,16 +12,21 @@ if (typeof getDylinkMetadata !== 'undefined') {
 // ---------------------------------------------------------------
 // Dynamic .olean loading (Phase 2): per-module zstd tarballs.
 //
-// At --post-js time the emscripten runtime + FS are ready and Init/
-// Display are already in the VFS via --embed-file. We download
-// manifest-v2.json, then for each module fetch <baseUrl><asset>,
-// decompress (zstd → tar), and FS.writeFile each entry under
-// /lib/lean/.
+// We download manifest-v2.json, then for each module fetch
+// <baseUrl><asset>, decompress (zstd → tar), and FS.writeFile each
+// entry under /lib/lean/.
+//
+// Run in `Module.preRun`: at --post-js time FS exists but the wasm
+// module is still being instantiated (FS.writeFile only works after
+// the wasm runtime side of FS is up). preRun fires AFTER FS is fully
+// usable but BEFORE main(); main() is when the kernel reads its
+// olean files, so writes here land in time.
 //
 // Failures here are logged but never throw — a kernel that boots
 // without Std/Lean/Sparkle/Hesper is still useful for Init-only code.
 // ---------------------------------------------------------------
-(function() {
+Module.preRun = Module.preRun || [];
+Module.preRun.push(function () {
   'use strict';
 
   function log(msg) { try { console.error('[olean] ' + msg); } catch(_) {} }
@@ -157,4 +162,4 @@ if (typeof getDylinkMetadata !== 'undefined') {
     }
   }
   log('done — ' + totalWritten + ' files written across ' + Object.keys(MANIFEST.modules).length + ' modules');
-})();
+});
