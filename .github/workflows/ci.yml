@@ -76,6 +76,20 @@ jobs:
         cd examples/sparkle
         .lake/build/bin/sparkleDemo
 
+    - name: Install Jupyter client (for kernel smoke test)
+      run: pip install --user --break-system-packages jupyter_client
+
+    - name: Register xlean kernelspec
+      run: bash scripts/install-kernelspec.sh --user
+
+    - name: Smoke-test the native kernel
+      run: |
+        # Drives xlean through the standard Jupyter protocol — this is the
+        # path real users hit from JupyterLab. Catches breakages that
+        # `lake build xlean` alone would not (kernelspec wiring, FFI
+        # init, ZMQ comms, etc.).
+        python3 scripts/smoke-test-native.py
+
     - name: Upload native binary
       uses: actions/upload-artifact@v4
       with:

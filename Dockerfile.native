@@ -1,10 +1,22 @@
 FROM ubuntu:24.04
 
-RUN apt-get update && apt-get install -y \
+# tzdata and a few other packages drop into an interactive prompt
+# during install if they cannot detect the host timezone, which hangs
+# `docker build` forever.
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake build-essential nlohmann-json3-dev \
     uuid-dev libssl-dev python3 python3-pip \
     clang libc++-dev libc++abi-dev \
-    curl git
+    curl git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# jupyter_client is what scripts/smoke-test-native.py uses to drive the
+# kernel through the standard Jupyter protocol. Pinning is light because
+# the API we use (KernelManager, kc.execute, get_iopub_msg) is stable.
+RUN pip install --break-system-packages jupyter_client
 
 # Install Lean via elan
 RUN curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y --default-toolchain leanprover/lean4:v4.28.0-rc1
@@ -25,5 +37,9 @@ RUN leanc -c src/glibc_isoc23_compat.c -o build-cmake/glibc_isoc23_compat.o
 
 # Step 3: Build Lean kernel
 RUN lake build xlean
+
+# Step 4: Register kernelspec under /root/.local/share/jupyter so that
+# jupyter_client's KernelManager(kernel_name="xlean") finds it.
+RUN bash scripts/install-kernelspec.sh --user
 
 CMD ["bash"]

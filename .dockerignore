@@ -35,3 +35,20 @@ log
 
 # CI
 .github/
+
+# Generated outputs (kept out of build context)
+_output/
+hesper-wasm/build/
+examples/*/.lake/
+
+# Playwright traces and test artifacts can grow to hundreds of MB
+tests/e2e/test-results/
+tests/e2e/playwright-report/
+tests/e2e/node_modules/
+
+# Build / debugging logs we tail by hand
+*.log
+
+# Cached WASM artifacts copied out for local debugging
+test_wasm_node.wasm
+test_wasm_node.js

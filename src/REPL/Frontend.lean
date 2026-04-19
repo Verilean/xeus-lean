@@ -80,30 +80,40 @@ def processInput (input : String) (cmdState? : Option Command.State)
     (opts : Options := {}) (fileName : Option String := none) :
     IO (Command.State × Command.State × List Message × List InfoTree) := unsafe do
   IO.eprintln "[processInput] ENTER"
-  -- In WASM, .olean files are embedded at /lib/lean/ so sysroot is "/".
-  -- Lean.findSysroot spawns `lean --print-prefix` which is impossible in WASM.
-  let sysroot : System.FilePath := "/"
-  IO.eprintln s!"[processInput] sysroot={sysroot}"
+  -- In WASM the .olean files are embedded at /lib/lean/ so sysroot is "/".
+  -- Lean.findSysroot would spawn `lean --print-prefix`, which is impossible
+  -- in WASM but is the right thing on a native build. Detect by probing
+  -- for the embedded VFS file; fall back to findSysroot otherwise.
+  let wasmInit := System.FilePath.mk "/lib/lean/Init.olean"
+  let isWasm   ← wasmInit.pathExists
+  let sysroot ← if isWasm then pure (System.FilePath.mk "/") else Lean.findSysroot
+  IO.eprintln s!"[processInput] sysroot={sysroot} (wasm={isWasm})"
   Lean.initSearchPath sysroot
   IO.eprintln "[processInput] initSearchPath done"
   enableInitializersExecution
   let fileName   := fileName.getD "<input>"
-  -- Auto-import Display + (when present) Sparkle and Hesper on the first
-  -- call. WasmRepl.execute auto-chains subsequent calls on the existing
-  -- env to work around a WASM memory64 bug in Lean's importModulesCore,
-  -- so once the first cell runs no further `import` is allowed. Each
-  -- pre-import is gated on the corresponding olean being in the VFS so
-  -- builds that ship without (e.g.) Hesper still work.
-  let hasSparkle ← (System.FilePath.mk "/lib/lean/Sparkle.olean").pathExists
-  let hasHesper  ← (System.FilePath.mk "/lib/lean/Hesper/WGSL/DSL.olean").pathExists
-  let input :=
-    if cmdState?.isNone then
+  -- WASM-only: auto-import Display + (when present) Sparkle and Hesper
+  -- on the first call. WasmRepl.execute auto-chains subsequent calls on
+  -- the existing env to work around a WASM memory64 bug in
+  -- `importModulesCore`, so once the first cell runs no further `import`
+  -- is allowed; we therefore have to inject everything users will need
+  -- up front. Each pre-import is gated on the corresponding olean
+  -- being in the VFS so trimmed builds still work.
+  --
+  -- Native build skips this entirely: there is no env-reuse workaround,
+  -- users write their own `import` lines, and `Display`/`Sparkle`/`Hesper`
+  -- may legitimately be unavailable.
+  let input ←
+    if isWasm && cmdState?.isNone then do
+      let hasSparkle ← (System.FilePath.mk "/lib/lean/Sparkle.olean").pathExists
+      let hasHesper  ← (System.FilePath.mk "/lib/lean/Hesper/WGSL/DSL.olean").pathExists
       let imports :=
         "import Display\n"
         ++ (if hasSparkle then "import Sparkle\n" else "")
         ++ (if hasHesper  then "import Hesper.WGSL.DSL\n" else "")
-      imports ++ input
-    else input
+      pure (imports ++ input)
+    else
+      pure input
   let inputCtx   := Parser.mkInputContext input fileName
 
   match cmdState? with
