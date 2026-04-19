@@ -13,43 +13,20 @@ Runs both as a **native desktop kernel** and as a **WASM kernel in the browser**
 
 ## Quick Start
 
-### Try in the Browser (WASM)
+Pick whichever path matches your setup. Each tutorial is self-contained
+and copy-pasteable.
 
-Visit the [GitHub Pages deployment](https://verilean.github.io/xeus-lean/) — no installation required.
+| Path | Time | What you get |
+|------|-----:|-----|
+| [Browser](docs/tutorials/browser-jupyterlite.md) | 1 min | JupyterLite at github.io, no install |
+| [Docker — native kernel](docs/tutorials/docker-native.md) | 10 min | Local Jupyter with Sparkle (`Signal.loop` works here, not in WASM) |
+| [Docker — WASM build](docs/tutorials/docker-wasm.md) | 30 min | Reproduce the JupyterLite static site, customize bundled libs |
+| [From source — native](docs/tutorials/native-from-source.md) | 30 min | Hack on the kernel itself |
 
-### Native Build
+Stuck? See the [troubleshooting guide](docs/tutorials/troubleshooting.md).
 
-```bash
-# Install Lean 4 via elan
-curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y
-
-# Build
-cmake -S . -B build-cmake
-cmake --build build-cmake
-lake build xlean
-
-# Install kernel spec and launch
-lake run installKernel
-jupyter lab  # Select "Lean 4" kernel
-```
-
-### WASM Build
-
-Requires: [nix](https://nixos.org/download/) and [pixi](https://pixi.sh/)
-
-```bash
-# Full pipeline: build + test + JupyterLite site + serve on :8888
-make deploy
-
-# Or step-by-step:
-make lake        # Generate .c files from Lean source
-make configure   # emcmake cmake
-make build       # emmake make (xlean + test_wasm_node)
-make test        # Run WASM tests in Node.js
-make deploy      # Build JupyterLite site + serve
-```
-
-See [WASM_BUILD.md](WASM_BUILD.md) for architecture details and the 5 key bottlenecks solved.
+For internals (the 5 WASM bottlenecks, the env-reuse workaround, the
+per-module zstd tarball pipeline), see [WASM_BUILD.md](WASM_BUILD.md).
 
 ## Example Session
 
