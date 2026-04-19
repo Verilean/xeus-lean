@@ -15,7 +15,14 @@ import { Page, Locator, expect } from '@playwright/test';
 import { browserSerializer, buildOptions, SerializeOptions } from './dom-serialize';
 
 const KERNEL_BOOT_TIMEOUT = 300_000;
-const CELL_EXEC_TIMEOUT = 60_000;
+// Cells that hit `import` paths (and therefore a fresh
+// `processInput` → `processHeader` → `importModulesCore`) can take
+// 30-60 s on the GitHub Actions runner where memory pressure from
+// the loaded Std/Lean/Sparkle/Hesper olean trees hurts kernel
+// throughput. Locally the same cells finish in 1-2 s, but in CI we
+// have seen `#latex` exceed 60 s. Three minutes is generous enough
+// to absorb that without masking real hangs.
+const CELL_EXEC_TIMEOUT = 180_000;
 
 /**
  * Launch a fresh notebook backed by the xlean kernel.
