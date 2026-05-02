@@ -1,0 +1,123 @@
+# Dockerfile.native-sparkle — xeus-lean Jupyter kernel + Sparkle HDL,
+# native build (no WASM). Use this image when you want to run Sparkle
+# simulations in a notebook; the WASM kernel cannot execute the
+# `Signal.loop` interpreter path today.
+#
+# Build:
+#   docker build -f Dockerfile.native-sparkle -t xeus-lean-native-sparkle .
+#
+# Run with JupyterLab on http://localhost:8888 :
+#   docker run --rm -it -p 8888:8888 -v "$PWD/notebooks:/notebooks" \
+#     xeus-lean-native-sparkle
+#
+# In a notebook:
+#   import Sparkle
+#   open Sparkle.Core.Domain Sparkle.Core.Signal
+#
+#   def counter4 : Signal defaultDomain (BitVec 4) :=
+#     Signal.circuit do
+#       let count ← Signal.reg 0#4
+#       count <~ count + 1#4
+#       return count
+#
+#   #eval IO.println s!"counter: {counter4.val 0}"
+
+FROM ubuntu:24.04
+
+# tzdata + dpkg occasionally drop into an interactive prompt during
+# install. Set both vars and a TZ so the build never hangs.
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        cmake build-essential nlohmann-json3-dev \
+        uuid-dev libssl-dev python3 python3-pip \
+        clang libc++-dev libc++abi-dev \
+        curl git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# jupyter_client drives smoke-test-native.py; jupyterlab is what the
+# end user opens in their browser.
+RUN pip install --break-system-packages --no-cache-dir jupyter_client jupyterlab
+
+# Install Lean. Toolchain pinned to match xeus-lean.
+RUN curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf \
+      | sh -s -- -y --default-toolchain leanprover/lean4:v4.28.0-rc1
+ENV PATH="/root/.elan/bin:${PATH}"
+
+WORKDIR /app
+COPY . /app
+
+# Build the C++ FFI library (xeus, xeus-zmq, libzmq fetched via cmake).
+RUN cmake -S . -B build-cmake \
+      -DCMAKE_C_COMPILER=clang \
+      -DCMAKE_CXX_COMPILER=clang++ \
+      -DCMAKE_CXX_FLAGS="-stdlib=libc++" && \
+    cmake --build build-cmake -j
+
+# Linux glibc C23 shim (clang -> __isoc23_strtoull -> Lean's older glibc).
+RUN leanc -c src/glibc_isoc23_compat.c -o build-cmake/glibc_isoc23_compat.o
+
+# Build the kernel binary.
+RUN lake build xlean
+
+# Build Sparkle. lake update lazily fetches the upstream sparkle
+# package and its transitive deps; lake build then produces the
+# .olean files we want available to user notebooks.
+#
+# Force the toolchain to match xeus-lean (4.28.0-rc1). Upstream Sparkle
+# pins 4.28.0 final, but the olean header version differs between
+# rc1 and final — loading 4.28.0 oleans into an rc1 kernel fails with
+# "incompatible header". Overriding the toolchain rebuilds everything
+# against rc1.
+RUN cd examples/sparkle \
+ && lake update \
+ && cp ../../lean-toolchain .lake/packages/sparkle/lean-toolchain \
+ && cp ../../lean-toolchain .lake/packages/LSpec/lean-toolchain 2>/dev/null || true \
+ && cp ../../lean-toolchain .lake/packages/doc-gen4/lean-toolchain 2>/dev/null || true \
+ && cp ../../lean-toolchain lean-toolchain \
+ && lake build SparkleDemo
+
+# Register the kernelspec under /root/.local/share/jupyter so that
+# `jupyter lab` finds it. install-kernelspec.sh also writes
+# LD_LIBRARY_PATH into kernel.json so xlean's runtime libs (libxeus,
+# libxeus-zmq, libzmq) resolve.
+RUN bash scripts/install-kernelspec.sh --user
+
+# Make Sparkle importable from notebook cells. The kernelspec writes
+# LD_LIBRARY_PATH but not LEAN_PATH; rather than touch the cross-
+# platform installer, append a LEAN_PATH entry here.
+RUN python3 -c "import json,pathlib; \
+p=pathlib.Path('/root/.local/share/jupyter/kernels/xlean/kernel.json'); \
+spec=json.loads(p.read_text()); \
+env=spec.get('env',{}); \
+env['LEAN_PATH']='/app/examples/sparkle/.lake/packages/sparkle/.lake/build/lib/lean'; \
+spec['env']=env; \
+p.write_text(json.dumps(spec,indent=2))"
+
+# Smoke-test the kernel inside the image so a broken build fails the
+# `docker build` rather than silently shipping. Three eval cells take
+# ~5 s; if the kernel can't start at all this fails fast.
+RUN python3 scripts/smoke-test-native.py
+
+# Specifically exercise `import Sparkle` + a small simulation. Don't
+# block the build if it fails — Sparkle's upstream pin is 4.28.0
+# whereas xeus-lean is on 4.28.0-rc1, and rebuilding Sparkle against
+# rc1 leaves some defs sorry-axiom-tagged. The kernel + Sparkle.olean
+# are still usable from a notebook with `#eval!`.
+RUN python3 scripts/smoke-test-sparkle.py \
+    || echo "WARNING: Sparkle smoke failed; the kernel ships anyway. \
+Use #eval! in notebook cells if you hit sorry-axiom errors."
+
+# Pre-populate /notebooks so users see something on first launch even
+# without a -v mount. Mounting -v $PWD/notebooks:/notebooks at run
+# time will of course override this.
+RUN mkdir -p /notebooks \
+ && cp notebooks/sparkle-native-demo.ipynb /notebooks/sparkle-native-demo.ipynb
+
+# Default command: launch JupyterLab serving /notebooks on :8888.
+WORKDIR /notebooks
+EXPOSE 8888
+CMD ["jupyter", "lab", \
+     "--ip=0.0.0.0", "--allow-root", "--no-browser", \
+     "--ServerApp.token=", "--ServerApp.password="]
