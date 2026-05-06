@@ -80,6 +80,20 @@ p.write_text(json.dumps(spec,indent=2))"
 # `docker build` rather than silently shipping.
 RUN python3 scripts/smoke-test-native.py
 
+# Strip build-time crud that doesn't need to ship: cmake FetchContent
+# leaves a full `.git/` for each dep (xeus, xeus-zmq, xtl, cppzmq,
+# libzmq) plus assorted upstream dotfiles. None of it is sensitive,
+# but removing it shaves several hundred MB and tightens the image.
+RUN find /app/build-cmake/_deps -type d -name ".git" -prune -exec rm -rf {} + 2>/dev/null; \
+    find /app \
+      \( -name ".clang-format" -o -name ".clang-tidy" \
+         -o -name ".travis.yml" -o -name ".hgeol" \
+         -o -name ".mailmap" -o -name ".git-blame-ignore-revs" \
+         -o -name ".releash.py" -o -name ".gitignore" \
+         -o -name ".dockerignore" -o -name ".envrc" \) \
+      -delete 2>/dev/null; \
+    true
+
 # Pre-populate /notebooks so users see something on first launch even
 # without a -v mount.
 RUN mkdir -p /notebooks

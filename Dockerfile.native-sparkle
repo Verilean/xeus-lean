@@ -141,6 +141,24 @@ RUN python3 scripts/smoke-test-native.py
 # the smoke test here is the minimum kernel-loads-Sparkle check.
 RUN python3 scripts/smoke-test-sparkle.py
 
+# Strip build-time crud that doesn't need to ship: each fetched
+# dependency carries a full `.git/` (xeus, xeus-zmq, xtl, cppzmq,
+# libzmq under build-cmake/_deps; sparkle + transitive Lake deps
+# under examples/sparkle/.lake), plus dotfiles like `.clang-format`
+# / `.travis.yml` that are only meaningful in their upstream repo.
+# Removing them shaves several hundred MB and makes the image easier
+# to reason about for security review.
+RUN find /app/build-cmake/_deps -type d -name ".git" -prune -exec rm -rf {} + 2>/dev/null; \
+    find /app/examples/sparkle/.lake -type d -name ".git" -prune -exec rm -rf {} + 2>/dev/null; \
+    find /app \
+      \( -name ".clang-format" -o -name ".clang-tidy" \
+         -o -name ".travis.yml" -o -name ".hgeol" \
+         -o -name ".mailmap" -o -name ".git-blame-ignore-revs" \
+         -o -name ".releash.py" -o -name ".gitignore" \
+         -o -name ".dockerignore" -o -name ".envrc" \) \
+      -delete 2>/dev/null; \
+    true
+
 # Pre-populate /notebooks so users see something on first launch even
 # without a -v mount. Mounting -v $PWD/notebooks:/notebooks at run
 # time will of course override this.
