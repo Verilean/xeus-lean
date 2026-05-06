@@ -23,7 +23,7 @@ docker build -f Dockerfile.native -t xeus-lean-native .
 This takes ~5 minutes the first time. It:
 
 1. Pulls Ubuntu 24.04
-2. Installs Lean via elan (toolchain `leanprover/lean4:v4.28.0-rc1`)
+2. Installs Lean via elan (toolchain `leanprover/lean4:v4.28.0`)
 3. Builds the C++ FFI library (`libxeus_ffi.a`)
 4. Builds the Lean kernel (`xlean`)
 

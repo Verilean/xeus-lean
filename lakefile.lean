@@ -10,6 +10,13 @@ lean_lib REPL where
 lean_lib ReplFFI where
   srcDir := "src"
 
+-- CommBus is the kernel-side comm session registry. Both Display
+-- (which registers comm handlers, e.g. for live waveform viewers) and
+-- XeusKernel (which dispatches incoming comm events) depend on it; it
+-- lives in its own lib so neither has to import the other.
+lean_lib CommBus where
+  srcDir := "src"
+
 -- Display.lean provides the #html / #latex / #md / #svg rich-display
 -- commands. It is declared as its own lib so that `import Display` from
 -- WasmRepl.lean (and user cells) resolves to src/Display.lean.
@@ -27,14 +34,44 @@ lean_exe testmain where
   root := `TestMain
   srcDir := "src"
 
+/--
+Read `XEUS_LEAN_EXTRA_LIBS` from the process environment at lakefile-load
+time. Whitespace-separated tokens, each appended verbatim to xlean's link
+line. This is a generic extension point: any library that needs to thread
+its own `@[extern]` symbols into the xlean kernel (so user notebook cells
+can call them via `#eval`) can build a static `.a` and put its path in
+this env var before `lake build xlean`. The xeus-lean lakefile itself
+stays free of project-specific deps.
+
+Example (Sparkle):
+  XEUS_LEAN_EXTRA_LIBS="/p/libsparkle_olean.a /p/libsparkle_barrier.a" \
+    lake build xlean
+
+We use `unsafeBaseIO` because Lake disallows `initialize ← ...` in the
+same module that consumes the result, and `moreLinkArgs` is pure
+`Array String`. Reading an env var has no observable side effect on the
+build, so the unsafe escape is appropriate here. The `@[implemented_by]`
+trick lets the compiler treat the definition as a black-box constant
+while the runtime actually performs the env read.
+-/
+unsafe def xleanExtraLinkArgsImpl : Array String := unsafeBaseIO do
+  match ← IO.getEnv "XEUS_LEAN_EXTRA_LIBS" with
+  | none => pure #[]
+  | some v => pure (v.splitOn " " |>.toArray |>.filter (· ≠ ""))
+
+@[implemented_by xleanExtraLinkArgsImpl]
+opaque xleanExtraLinkArgs : Array String
+
 @[default_target]
 lean_exe xlean where
   root := `XeusKernel
   supportInterpreter := true
   srcDir := "src"
-  -- Link with the xeus FFI static library built by cmake
-  -- Platform-specific link arguments
-  moreLinkArgs :=
+  -- Link with the xeus FFI static library built by cmake.
+  -- Platform-specific link arguments. Anything in `XEUS_LEAN_EXTRA_LIBS`
+  -- (a whitespace-separated list of paths) is appended verbatim — see
+  -- the `xleanExtraLinkArgs` initializer above for the rationale.
+  moreLinkArgs := (
     if System.Platform.isWindows then
       #["./build-cmake/libxeus_ffi.a",
         "-L./build-cmake/_deps/xeus-build",
@@ -66,6 +103,7 @@ lean_exe xlean where
         "-lxeus", "-lxeus-zmq", "-lzmq",
         "-Wl,--end-group",
         "-lpthread", "-lm", "-ldl"]
+  ) ++ xleanExtraLinkArgs
 
 /-- Script to build xlean via cmake -/
 script buildXlean do

@@ -17,11 +17,11 @@ add commands, debug the Lean main loop, etc. No Docker.
 
 ```bash
 curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
-    -sSf | sh -s -- -y --default-toolchain leanprover/lean4:v4.28.0-rc1
+    -sSf | sh -s -- -y --default-toolchain leanprover/lean4:v4.28.0
 
 # Pick up `lean` and `lake` in your shell
 export PATH="$HOME/.elan/bin:$PATH"
-lean --version  # Lean 4.28.0-rc1, ...
+lean --version  # Lean 4.28.0, ...
 ```
 
 (Pin matters: the kernel uses Lean's stage0 stdlib internals; matching

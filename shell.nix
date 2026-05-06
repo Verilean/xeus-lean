@@ -26,6 +26,7 @@ pkgs.mkShell {
     clang
     libcxx
     libcxxrt
+    zstd.dev
   ];
 
   # Environment variables

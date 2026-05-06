@@ -2,13 +2,14 @@
 """Sparkle-specific smoke test for the native xlean kernel.
 
 Runs after smoke-test-native.py inside Dockerfile.native-sparkle to
-prove that `import Sparkle` resolves and that a tiny circuit
-simulation actually executes. The WASM kernel hangs on the same
-Signal.loop interpreter path; this is the concrete test that
-demonstrates the native image does not have that bug.
+prove that `import Sparkle` resolves and the core types kind-check.
+xeus-lean and Sparkle now pin the same Lean toolchain (4.28.0 final),
+so olean headers match and `Signal.circuit` macros are sorry-free —
+this test stays narrow on purpose, more elaborate simulation lives in
+the bundled `sparkle-native-demo.ipynb`.
 
 Exit codes:
-    0   import + simulation succeeded
+    0   import resolved + types kind-checked
     1   kernel start failed
     2   execute failed
     3   output mismatch
@@ -29,13 +30,21 @@ CELL = textwrap.dedent("""\
     import Sparkle
     open Sparkle.Core.Domain Sparkle.Core.Signal
 
-    -- Smallest possible "Sparkle is loaded" check: build a constant
-    -- signal and sample it. Avoids `Signal.circuit` / `Signal.reg`
-    -- whose body in upstream Sparkle depends on sorry-tagged proofs
-    -- when the toolchain is overridden to rc1.
-    def s : Signal defaultDomain (BitVec 4) := Signal.const 7#4
-    #eval! IO.println s!"sparkle native: counter={s.val 0}"
-""")
+    -- Build a tiny stateful counter via `Signal.circuit` and evaluate
+    -- it. This exercises the full path: import resolves, `Signal.reg`
+    -- macro expands, the circuit goes through `Signal.loop`, and the
+    -- C FFI symbol `sparkle_eval_at` is reachable from the
+    -- interpreter (only true if xlean was relinked against
+    -- libsparkle_*.a). A regression on any of those layers fails
+    -- this single cell.
+    def counter4 : Signal defaultDomain (BitVec 4) :=
+      Signal.circuit do
+        let count <- Signal.reg 0#4;
+        count <~ count + 1#4;
+        return count
+
+    #eval IO.println s!"sparkle native: counter4(15)={(counter4.val 15).toNat}"
+""").replace('<-', '←')
 
 # `Signal.loop` runs through the IR interpreter and is slow — even
 # native takes a few seconds.
@@ -93,7 +102,7 @@ def main():
         except Exception:
             pass
 
-    needle = "sparkle native: counter="
+    needle = "sparkle native: counter4(15)=15"
     if needle in out:
         print(f"[sparkle-smoke] OK — output: {out.strip()[:200]}")
         return
