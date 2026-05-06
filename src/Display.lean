@@ -560,6 +560,65 @@ def mermaid (src : String) : IO Unit := do
   ]
   emit "text/html" html
 
+/-- Render a SystemVerilog source string with syntax highlighting.
+    Uses Highlight.js (verilog/systemverilog grammar) loaded lazily
+    from a CDN on first use. The same idempotent loader pattern as
+    `mermaid` ensures only one fetch per page. Useful right after
+    `#showVerilog`-style elaboration: instead of dumping flat text
+    you get a coloured listing inline. -/
+def verilog (src : String) : IO Unit := do
+  let id := s!"sv-{(hash src).toUSize.toNat}"
+  -- Same escape rules as a normal HTML <pre> block: < and & must be
+  -- entity-escaped so the source isn't parsed as tags.
+  let escSrc := src.replace "&" "&amp;" |>.replace "<" "&lt;" |>.replace ">" "&gt;"
+  let html := String.intercalate "" [
+    "<div class='xlean-verilog' style='margin:0'>",
+    "<pre id='", id, "' style='background:#f6f8fa;padding:8px 12px;border-radius:4px;border:1px solid #e1e4e8;font-size:12px;line-height:1.4;overflow:auto;margin:0'>",
+    "<code class='language-verilog'>", escSrc, "</code></pre></div>",
+    "<script>",
+    "(function() {",
+    "  const id = '", id, "';",
+    "  function paint() {",
+    "    if (!window.hljs) return;",
+    "    const el = document.querySelector('#' + id + ' code');",
+    "    if (el && !el.dataset.hlPainted) {",
+    "      window.hljs.highlightElement(el);",
+    "      el.dataset.hlPainted = '1';",
+    "    }",
+    "  }",
+    "  if (window.hljs) { paint(); return; }",
+    "  if (window.__xleanHljsLoading) {",
+    "    window.__xleanHljsPending = (window.__xleanHljsPending || []);",
+    "    window.__xleanHljsPending.push(paint);",
+    "    return;",
+    "  }",
+    "  window.__xleanHljsLoading = true;",
+    "  window.__xleanHljsPending = [paint];",
+    "  /* GitHub theme + core lib + verilog grammar. cdnjs's core bundle",
+    "     only ships ~30 common languages; Verilog isn't one, so the",
+    "     grammar is loaded separately. */",
+    "  const css = document.createElement('link');",
+    "  css.rel = 'stylesheet';",
+    "  css.href = 'https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css';",
+    "  document.head.appendChild(css);",
+    "  const core = document.createElement('script');",
+    "  core.src = 'https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js';",
+    "  core.onload = function() {",
+    "    const sv = document.createElement('script');",
+    "    sv.src = 'https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/languages/verilog.min.js';",
+    "    sv.onload = function() {",
+    "      const pending = window.__xleanHljsPending || [];",
+    "      window.__xleanHljsPending = [];",
+    "      for (const fn of pending) fn();",
+    "    };",
+    "    document.head.appendChild(sv);",
+    "  };",
+    "  document.head.appendChild(core);",
+    "})();",
+    "</script>"
+  ]
+  emit "text/html" html
+
 /-- Run a `bash -c <cmd>` and emit the result as plain-text cell output:
     stdout first, then stderr (prefixed `stderr:`) if non-empty, then a
     final `[exit N]` line if the command failed. Same shape as the
@@ -2054,6 +2113,9 @@ private def builtinHelp : Array Display.HelpEntry := #[
   { command := "#mermaid",  category := "display",
     brief := "Inline Mermaid diagram (loads mermaid.js from CDN on first use). For hardware block diagrams use shapes: [(R)] register, >ALU] logic, [/in/] port, -.-> clock, ==>|n| bus.",
     usage := "#mermaid \"flowchart LR\\n  IN --> R1[(R1)] --> ALU>ALU] --> R2[(R2)] --> OUT\\n  CLK -.-> R1 & R2\"" },
+  { command := "Display.verilog", category := "display",
+    brief := "Pretty-print a SystemVerilog source string with Highlight.js syntax coloring (CDN-loaded github theme).",
+    usage := "#eval Display.verilog (Sparkle.Backend.Verilog.toVerilog m)" },
   { command := "#blockDiagram", category := "display",
     brief := "Structured HW block diagram (port/reg/mux/cloud/box/andG/orG/notG/adder/const/clk + data/clock/bus edges). Trapezoid MUX, real cloud, gate symbols — shapes Mermaid can't do. Layout uses col/row fields on each node.",
     usage := "#eval Display.blockDiagram { nodes := [...], edges := [...] }" },
