@@ -1,3 +1,21 @@
+# Dockerfile.native — xeus-lean base image (kernel + Display lib).
+#
+# Published as `ghcr.io/verilean/xeus-lean:latest`. Project-specific
+# downstream images (Sparkle, Hesper, ...) FROM this and use the
+# generic `XEUS_LEAN_EXTRA_LIBS` extension point declared in
+# `lakefile.lean` to thread their own static libraries into xlean.
+#
+# Run as a JupyterLab server:
+#   docker run --rm -it -p 8888:8888 ghcr.io/verilean/xeus-lean:latest
+#
+# Or as a Sparkle/Hesper base:
+#   FROM ghcr.io/verilean/xeus-lean:latest
+#   COPY my-lib/ /app/my-lib/
+#   RUN cd /app/my-lib && lake build mylib
+#   RUN ar rcs /app/build-cmake/libmy_olean.a /app/my-lib/.lake/.../*.c.o.export
+#   RUN rm -f /app/.lake/build/bin/xlean && \
+#       XEUS_LEAN_EXTRA_LIBS="-Wl,--whole-archive /app/build-cmake/libmy_olean.a -Wl,--no-whole-archive" \
+#       lake build xlean
 FROM ubuntu:24.04
 
 # tzdata and a few other packages drop into an interactive prompt
@@ -11,35 +29,64 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     uuid-dev libssl-dev python3 python3-pip \
     clang libc++-dev libc++abi-dev \
     curl git ca-certificates \
+    zstd \
  && rm -rf /var/lib/apt/lists/*
 
-# jupyter_client is what scripts/smoke-test-native.py uses to drive the
-# kernel through the standard Jupyter protocol. Pinning is light because
-# the API we use (KernelManager, kc.execute, get_iopub_msg) is stable.
-RUN pip install --break-system-packages jupyter_client
+# jupyter_client drives smoke-test-native.py; jupyterlab is what users
+# open in their browser when they `docker run` this image.
+RUN pip install --break-system-packages --no-cache-dir jupyter_client jupyterlab
 
 # Install Lean via elan
 RUN curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y --default-toolchain leanprover/lean4:v4.28.0
 ENV PATH="/root/.elan/bin:${PATH}"
 
 WORKDIR /app
-COPY . /app
+COPY CMakeLists.txt lakefile.lean lake-manifest.json lean-toolchain /app/
+COPY cmake/    /app/cmake/
+COPY include/  /app/include/
+COPY src/      /app/src/
 
-# Step 1: Build C++ FFI library with system clang++ -stdlib=libc++
+# Build the C++ FFI library (xeus, xeus-zmq, libzmq fetched via cmake).
 RUN cmake -S . -B build-cmake \
       -DCMAKE_C_COMPILER=clang \
       -DCMAKE_CXX_COMPILER=clang++ \
       -DCMAKE_CXX_FLAGS="-stdlib=libc++" && \
-    cmake --build build-cmake
+    cmake --build build-cmake -j
 
-# Step 2: Build glibc C23 compat shim with leanc
+# Linux glibc C23 shim (clang -> __isoc23_strtoull -> Lean's older glibc).
 RUN leanc -c src/glibc_isoc23_compat.c -o build-cmake/glibc_isoc23_compat.o
 
-# Step 3: Build Lean kernel
-RUN lake build xlean
+# Build the kernel binary + the Display lib (so notebook cells can
+# `import Display` for inline SVG/HTML/Markdown rich output, plus the
+# new comm-driven waveform viewer).
+RUN lake build xlean Display CommBus
 
-# Step 4: Register kernelspec under /root/.local/share/jupyter so that
-# jupyter_client's KernelManager(kernel_name="xlean") finds it.
+# Register the kernelspec under /root/.local/share/jupyter so that
+# `jupyter lab` finds it. install-kernelspec.sh writes LD_LIBRARY_PATH
+# but not LEAN_PATH / PATH; we append both here so Display oleans
+# resolve and `bv_decide` can spawn the cadical bundled with elan.
+COPY scripts/ /app/scripts/
 RUN bash scripts/install-kernelspec.sh --user
+RUN python3 -c "import json,pathlib; \
+p=pathlib.Path('/root/.local/share/jupyter/kernels/xlean/kernel.json'); \
+spec=json.loads(p.read_text()); \
+env=spec.get('env',{}); \
+env['LEAN_PATH']='/app/.lake/build/lib/lean'; \
+env['PATH']='/root/.elan/toolchains/leanprover--lean4---v4.28.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'; \
+spec['env']=env; \
+p.write_text(json.dumps(spec,indent=2))"
 
-CMD ["bash"]
+# Smoke-test the kernel inside the image so a broken build fails the
+# `docker build` rather than silently shipping.
+RUN python3 scripts/smoke-test-native.py
+
+# Pre-populate /notebooks so users see something on first launch even
+# without a -v mount.
+RUN mkdir -p /notebooks
+
+# Default command: launch JupyterLab serving /notebooks on :8888.
+WORKDIR /notebooks
+EXPOSE 8888
+CMD ["jupyter", "lab", \
+     "--ip=0.0.0.0", "--allow-root", "--no-browser", \
+     "--ServerApp.token=", "--ServerApp.password="]

@@ -61,10 +61,23 @@ def mkMarker (mime : String) (content : String) : String :=
     after each cell execution. -/
 initialize displayBuffer : IO.Ref String ← IO.mkRef ""
 
-/-- Append a MIME payload to the global buffer. -/
+/-- Most recent payload per MIME type, surviving across cells. The
+    drain loop empties `displayBuffer` after each cell to ship its
+    contents to Jupyter, but `#savefig` needs the underlying bytes
+    after that, so we keep a copy here keyed by mime type. -/
+initialize lastEmits : IO.Ref (Std.HashMap String String) ← IO.mkRef {}
+
+/-- Append a MIME payload to the global buffer and remember it. -/
 def emit (mime : String) (content : String) : IO Unit := do
   let marker := mkMarker mime content
   displayBuffer.modify (· ++ marker ++ "\n")
+  lastEmits.modify (·.insert mime content)
+
+/-- Look up the most recent payload of a given MIME type, if any.
+    Used by `#savefig` to write the latest figure to a file. -/
+def lastEmit? (mime : String) : IO (Option String) := do
+  let m ← lastEmits.get
+  pure m[mime]?
 
 /-- Drain the buffer and return accumulated content (or ""). -/
 def drain : IO String := do
@@ -72,11 +85,55 @@ def drain : IO String := do
   displayBuffer.set ""
   return s
 
+/-- Save the most recent figure to a file. The MIME type to save is
+    inferred from the file extension: `.svg → image/svg+xml`,
+    `.html → text/html`, `.md → text/markdown`, `.json → application/json`,
+    `.tex / .latex → text/latex`. Returns the bytes written, or throws
+    if no figure of that type has been emitted in this kernel session. -/
+def savefig (path : String) : IO Unit := do
+  let mime :=
+    if path.endsWith ".svg" then "image/svg+xml"
+    else if path.endsWith ".html" then "text/html"
+    else if path.endsWith ".md" then "text/markdown"
+    else if path.endsWith ".json" then "application/json"
+    else if path.endsWith ".tex" || path.endsWith ".latex" then "text/latex"
+    else ""
+  if mime == "" then
+    throw <| IO.userError s!"savefig: cannot infer MIME type from extension of '{path}'"
+  match ← lastEmit? mime with
+  | none =>
+    throw <| IO.userError s!"savefig: no '{mime}' figure has been emitted yet"
+  | some content =>
+    IO.FS.writeFile path content
+    IO.println s!"saved {content.length} bytes to {path}"
+
 def html (content : String) : IO Unit := emit "text/html" content
 def latex (content : String) : IO Unit := emit "text/latex" s!"${content}$"
 def markdown (content : String) : IO Unit := emit "text/markdown" content
 def svg (content : String) : IO Unit := emit "image/svg+xml" content
 def json (content : String) : IO Unit := emit "application/json" content
+
+/-- Pretty-print a `BitVec n` as a 3-row HTML table with binary, hex
+    and decimal renderings. Useful for sparkle / hardware notebooks
+    where you want to eyeball the layout of a register or constant. -/
+def bv {n : Nat} (v : BitVec n) : IO Unit := do
+  let dec := toString v.toNat
+  let hex := s!"0x{(Nat.toDigits 16 v.toNat).asString}"
+  -- Binary: pad to width n, MSB first.
+  let bin := Id.run do
+    let mut s := ""
+    for i in [0:n] do
+      let bit := (v.toNat >>> (n - 1 - i)) &&& 1
+      s := s ++ toString bit
+    s
+  let html := String.intercalate "" [
+    "<table style='font-family:monospace;border-collapse:collapse;font-size:12px;text-align:left'>",
+    s!"<tr><td style='padding:2px 8px;color:#888;text-align:left'>bin</td><td style='padding:2px 8px;text-align:left'>{bin}<sub style='color:#888'>{n}</sub></td></tr>",
+    s!"<tr><td style='padding:2px 8px;color:#888;text-align:left'>hex</td><td style='padding:2px 8px;text-align:left'>{hex}</td></tr>",
+    s!"<tr><td style='padding:2px 8px;color:#888;text-align:left'>dec</td><td style='padding:2px 8px;text-align:left'>{dec}</td></tr>",
+    "</table>"
+  ]
+  emit "text/html" html
 
 /-- Render a list of numeric values as an SVG waveform diagram.
     Each value is drawn as a horizontal bar with height proportional
@@ -1145,6 +1202,10 @@ def waveformJSHtml (sessionId : String) (laneNames : List String)
     "  // The selection rect (shift+drag) is a transient overlay, so we keep",
     "  // it as state and draw it after the lanes each frame.",
     "  let selRect = null;  // {x0, x1} in canvas-css pixels",
+    "  // Hover state: x of the cursor in canvas-css pixels, or null when",
+    "  // the cursor is off the canvas. Used to draw a vertical caret +",
+    "  // textual readout of the values at that tick.",
+    "  let hoverX = null;",
     "",
     "  function drawFrameAll() {",
     "    // Make sure CSS height tracks the visible-lane count so a hidden",
@@ -1186,6 +1247,42 @@ def waveformJSHtml (sessionId : String) (laneNames : List String)
     "      ctx2d.fillRect(Math.min(selRect.x0, selRect.x1), 0, Math.abs(selRect.x1 - selRect.x0), cssH);",
     "      ctx2d.strokeStyle = '#1976d2'; ctx2d.lineWidth = 1;",
     "      ctx2d.strokeRect(Math.min(selRect.x0, selRect.x1) + 0.5, 0.5, Math.abs(selRect.x1 - selRect.x0), cssH - 1);",
+    "    }",
+    "    // Hover caret + readout. Resolves the tick under the cursor and,",
+    "    // for each visible lane, looks up its bit in lastDraw (the most",
+    "    // recently fetched window). When a fresh fetch hasn't landed yet",
+    "    // we silently skip the readout rather than show stale values.",
+    "    if (hoverX !== null && hoverX >= labelW && lastDraw) {",
+    "      const xFrac = (hoverX - labelW) / Math.max(1, cssW - labelW);",
+    "      const tHover = Math.round(vT0 + xFrac * (vT1 - vT0));",
+    "      // Vertical caret",
+    "      ctx2d.strokeStyle = 'rgba(244,67,54,0.7)'; ctx2d.lineWidth = 1;",
+    "      ctx2d.beginPath();",
+    "      ctx2d.moveTo(hoverX + 0.5, 0); ctx2d.lineTo(hoverX + 0.5, cssH);",
+    "      ctx2d.stroke();",
+    "      // Readout pill",
+    "      const sampleStep = 1 << lastDraw.lod;",
+    "      const ix = (tHover - lastDraw.qT0) >>> lastDraw.lod;",
+    "      const valid = ix >= 0 && ix < ((lastDraw.qT1 - lastDraw.qT0) >>> lastDraw.lod);",
+    "      // Build the readout string.",
+    "      let readout = 't=' + tHover;",
+    "      if (valid) {",
+    "        for (const lane of lastDraw.lanes) {",
+    "          if (!visibleLanes.includes(lane.name)) continue;",
+    "          readout += '  ' + lane.name + '=' + bitAt(lane.bits, ix);",
+    "        }",
+    "      }",
+    "      ctx2d.font = '11px monospace';",
+    "      const textW = ctx2d.measureText(readout).width;",
+    "      const padX = 6, padY = 4;",
+    "      let pillX = hoverX + 8;",
+    "      const pillW = textW + 2 * padX, pillH = 18;",
+    "      // Flip to the left of the caret if the pill would clip the right edge.",
+    "      if (pillX + pillW > cssW - 4) pillX = hoverX - 8 - pillW;",
+    "      ctx2d.fillStyle = 'rgba(33,33,33,0.85)';",
+    "      ctx2d.fillRect(pillX, 4, pillW, pillH);",
+    "      ctx2d.fillStyle = '#fff';",
+    "      ctx2d.fillText(readout, pillX + padX, 4 + pillH / 2 + 4);",
     "    }",
     "  }",
     "",
@@ -1314,6 +1411,17 @@ def waveformJSHtml (sessionId : String) (laneNames : List String)
     "      selRect = { x0: drag.x0, x1: drag.x1 };",
     "      kickAnimation();",
     "    }",
+    "  });",
+    "  // Track hover separately so the readout updates even when no drag",
+    "  // is active. Throttle to one rAF tick so we don't spam redraws.",
+    "  canvas.addEventListener('mousemove', (e) => {",
+    "    const rect = canvas.getBoundingClientRect();",
+    "    hoverX = e.clientX - rect.left;",
+    "    kickAnimation();",
+    "  });",
+    "  canvas.addEventListener('mouseleave', () => {",
+    "    hoverX = null;",
+    "    kickAnimation();",
     "  });",
     "  window.addEventListener('mouseup', () => {",
     "    if (!drag) return;",
@@ -1904,6 +2012,13 @@ macro "#json "  s:str : command => `(#eval Display.json $s)
     this macro fills the gap. -/
 macro "#bash "  s:str : command => `(#eval Display.bash $s)
 
+/-- `#savefig "fig.svg"` — save the most recent `Display.svg` /
+    `Display.html` / `Display.markdown` / `Display.json` /
+    `Display.latex` payload to a file. The MIME type is inferred
+    from the extension. Useful for grabbing inline figures into
+    LaTeX/Markdown manuscripts without re-running the kernel. -/
+macro "#savefig " s:str : command => `(#eval Display.savefig $s)
+
 /-- `#mermaid "graph TD; A-->B"` — render a Mermaid diagram inline.
     On first call per page mermaid.js is fetched from a CDN; subsequent
     diagrams reuse the cached library. See `Display.mermaid` for details. -/
@@ -1945,6 +2060,12 @@ private def builtinHelp : Array Display.HelpEntry := #[
   { command := "#bash",     category := "shell",
     brief := "Run a one-liner under `bash -c` and dump its output to the cell.",
     usage := "#bash \"ls /tmp\"" },
+  { command := "#savefig",  category := "display",
+    brief := "Save the most recent rich-display payload to a file. MIME type inferred from extension (.svg, .html, .md, .json, .tex).",
+    usage := "#savefig \"figure.svg\"" },
+  { command := "Display.bv", category := "display",
+    brief := "Pretty-print a BitVec n as a bin/hex/dec table.",
+    usage := "#eval Display.bv (0x42#8 : BitVec 8)" },
   { command := "#findDecl", category := "search",
     brief := "Substring-search the env for declarations. AND mode + paging.",
     usage := "#findDecl \"Signal\" \"register\" 0 10" },

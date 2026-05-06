@@ -19,9 +19,40 @@ and copy-pasteable.
 | Path | Time | What you get |
 |------|-----:|-----|
 | [Browser](docs/tutorials/browser-jupyterlite.md) | 1 min | JupyterLite at github.io, no install |
-| [Docker — native kernel](docs/tutorials/docker-native.md) | 10 min | Local Jupyter with Sparkle (`Signal.loop` works here, not in WASM) |
+| **Pre-built base image** | 10 sec | `docker run --rm -it -p 8888:8888 ghcr.io/verilean/xeus-lean:latest` — JupyterLab + xlean kernel + Display lib (no Sparkle) |
+| [Docker — native kernel](docs/tutorials/docker-native.md) | 10 min | Build the base image locally |
 | [Docker — WASM build](docs/tutorials/docker-wasm.md) | 30 min | Reproduce the JupyterLite static site, customize bundled libs |
 | [From source — native](docs/tutorials/native-from-source.md) | 30 min | Hack on the kernel itself |
+
+### Building on top of the base image
+
+Downstream projects (Sparkle, Hesper, …) extend `ghcr.io/verilean/xeus-lean` by lake-building their own Lean lib and re-linking xlean against it. The mechanism is `XEUS_LEAN_EXTRA_LIBS`, a generic env-var-driven extension point in `lakefile.lean`. Sketch:
+
+```dockerfile
+FROM ghcr.io/verilean/xeus-lean:latest
+
+# Pull and build the project's Lean lib + any C FFI it ships.
+COPY my-lib/ /app/my-lib/
+RUN cd /app/my-lib && lake update && lake build mylib
+
+# Bundle compiled olean objects into a static archive (skip Main.c.o.export
+# so it doesn't clash with xlean's lean_main).
+RUN cd /app/my-lib/.lake/packages/mylib/.lake/build/ir && \
+    find . -name '*.c.o.export' ! -name 'Main.c.o.export' -print0 \
+      | xargs -0 ar rcs /app/build-cmake/libmy_olean.a
+
+# Relink xlean. --whole-archive is required because no symbol in
+# xlean directly references project libs (the Lean interpreter looks
+# them up at runtime), so a normal link would drop them as dead code.
+RUN rm -f /app/.lake/build/bin/xlean && \
+    XEUS_LEAN_EXTRA_LIBS="-Wl,--whole-archive \
+      /app/build-cmake/libmy_olean.a \
+      /app/my-lib/.lake/.../libmy_ffi.a \
+      -Wl,--no-whole-archive" \
+    lake build xlean
+```
+
+This keeps xeus-lean free of any project-specific build dependency. See `Dockerfile.native-sparkle` for the worked example.
 
 Stuck? See the [troubleshooting guide](docs/tutorials/troubleshooting.md).
 
