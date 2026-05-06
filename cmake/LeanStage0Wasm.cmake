@@ -92,9 +92,14 @@ function(build_lean_stage0_wasm out_init out_std out_lean out_repl)
     file(GLOB_RECURSE REPL_SOURCES "${REPL_IR_DIR}/REPL/*.c")
     list(APPEND REPL_SOURCES "${REPL_IR_DIR}/REPL.c")
     list(APPEND REPL_SOURCES "${REPL_IR_DIR}/WasmRepl.c")
-    # Display.lean provides #html/#latex/#md/#svg commands and is imported
-    # by WasmRepl.lean, so its compiled .c file must be linked in.
+    # Display.lean provides #html/#latex/#md/#svg/#bash/#mermaid/...
+    # commands and is imported by WasmRepl.lean, so its compiled .c
+    # file must be linked in.
     list(APPEND REPL_SOURCES "${REPL_IR_DIR}/Display.c")
+    # CommBus is the comm-session registry; Display imports it for
+    # the interactive waveform viewer, so its .c is required for the
+    # link to resolve `lp_xeus_x2dlean_CommBus_*` symbols.
+    list(APPEND REPL_SOURCES "${REPL_IR_DIR}/CommBus.c")
 
     # NOTE: XeusKernel.c is NOT included — it defines the native kernel's main()
     # which conflicts with the WASM entry point (xinterpreter_wasm.cpp).

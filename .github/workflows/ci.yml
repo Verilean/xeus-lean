@@ -128,7 +128,10 @@ jobs:
       run: pixi run -e wasm-build fix-emscripten-links || true
 
     - name: Build Lean REPL (lake)
-      run: lake build REPL Display WasmRepl
+      # CommBus is the comm-session registry; Display imports it for
+      # the interactive waveform viewer, so its compiled object has
+      # to be in the link line for WASM xlean too.
+      run: lake build REPL CommBus Display WasmRepl
 
     - name: Build Sparkle example (lake) — produces IR .cpp files for WASM
       run: |
