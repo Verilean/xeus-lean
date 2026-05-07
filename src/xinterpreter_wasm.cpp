@@ -400,36 +400,46 @@ void interpreter::execute_request_impl(send_reply_callback cb,
             m_current_env = result["env"].get<int>();
         }
 
-        // Format output
+        // Format output. Render messages the same way Lean's compiler
+        // does — `<line>:<col>: <severity>: <data>` for warnings/errors,
+        // and the bare data for info (which is what `#eval` / `#check`
+        // emit). This matches the native kernel's renderer in
+        // XeusKernel.lean and gives users a scannable trace instead of
+        // the raw JSON envelope.
         nl::json pub_data;
         nl::json mime_bundle = nl::json::object();
         if (result.contains("messages")) {
             auto& messages = result["messages"];
-            bool has_errors = false;
-            std::string info_output;
+            std::string rendered;
+
+            auto append_line = [&rendered](const std::string& s) {
+                if (!rendered.empty()) rendered += "\n";
+                rendered += s;
+            };
 
             for (auto& msg : messages) {
                 std::string severity = msg.value("severity", "info");
-                if (severity == "error" || severity == "warning") {
-                    has_errors = true;
-                }
+                std::string data = msg.value("data", "");
                 if (severity == "info") {
-                    // Pull MIME-typed payloads (Display.html, etc.) out of
-                    // the message text. Whatever is left is plain text.
-                    std::string raw = msg.value("data", "");
+                    // Pull MIME-typed payloads (Display.html, etc.) out
+                    // of info messages. Whatever is left is plain text.
                     std::string plain;
-                    extract_mime_payloads(raw, mime_bundle, plain);
-                    if (!plain.empty()) {
-                        if (!info_output.empty()) info_output += "\n";
-                        info_output += plain;
+                    extract_mime_payloads(data, mime_bundle, plain);
+                    if (!plain.empty()) append_line(plain);
+                } else {
+                    int line = 0, col = 0;
+                    if (msg.contains("pos") && msg["pos"].is_object()) {
+                        line = msg["pos"].value("line", 0);
+                        col  = msg["pos"].value("column", 0);
                     }
+                    append_line(std::to_string(line) + ":"
+                                + std::to_string(col) + ": "
+                                + severity + ": " + data);
                 }
             }
 
-            if (has_errors) {
-                pub_data["text/plain"] = result_json;
-            } else if (!info_output.empty()) {
-                pub_data["text/plain"] = info_output;
+            if (!rendered.empty()) {
+                pub_data["text/plain"] = rendered;
             }
         }
 
