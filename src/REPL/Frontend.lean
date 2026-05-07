@@ -92,25 +92,49 @@ def processInput (input : String) (cmdState? : Option Command.State)
   IO.eprintln "[processInput] initSearchPath done"
   enableInitializersExecution
   let fileName   := fileName.getD "<input>"
-  -- WASM-only: auto-import Display + (when present) Sparkle and Hesper
-  -- on the first call. WasmRepl.execute auto-chains subsequent calls on
-  -- the existing env to work around a WASM memory64 bug in
-  -- `importModulesCore`, so once the first cell runs no further `import`
-  -- is allowed; we therefore have to inject everything users will need
-  -- up front. Each pre-import is gated on the corresponding olean
-  -- being in the VFS so trimmed builds still work.
+  -- Auto-import Display (and, when present, Sparkle / Hesper) on the
+  -- first cell. Why: the Lean REPL only allows `import` at the very
+  -- start of a "file", and each cell after the first reuses the prior
+  -- cmdState — so once any cell has run, the user can no longer
+  -- import anything. We pre-inject the imports that ship with the
+  -- kernel so `#help_x`, `Display.html`, etc. work without the user
+  -- having to remember to put `import Display` in cell 1.
   --
-  -- Native build skips this entirely: there is no env-reuse workaround,
-  -- users write their own `import` lines, and `Display`/`Sparkle`/`Hesper`
-  -- may legitimately be unavailable.
+  -- The auto-import only runs when `cmdState?` is `none` (i.e. the
+  -- very first cell). User code in that cell still runs after the
+  -- imports — anything the user typed is concatenated.
+  --
+  -- WASM gates each pre-import on the olean being in the embedded
+  -- VFS (because trimmed-down WASM kernels may drop Sparkle/Hesper).
+  -- Native always ships Display via lean-toolchain, but Sparkle and
+  -- Hesper may be absent in the base image; gate those by checking
+  -- their olean path in the build's lean search path.
   let input ←
-    if isWasm && cmdState?.isNone then do
-      let hasSparkle ← (System.FilePath.mk "/lib/lean/Sparkle.olean").pathExists
-      let hasHesper  ← (System.FilePath.mk "/lib/lean/Hesper/WGSL/DSL.olean").pathExists
-      let imports :=
-        "import Display\n"
-        ++ (if hasSparkle then "import Sparkle\n" else "")
-        ++ (if hasHesper  then "import Hesper.WGSL.DSL\n" else "")
+    if cmdState?.isNone then do
+      let imports ← if isWasm then do
+        let hasSparkle ← (System.FilePath.mk "/lib/lean/Sparkle.olean").pathExists
+        let hasHesper  ← (System.FilePath.mk "/lib/lean/Hesper/WGSL/DSL.olean").pathExists
+        pure <|
+          "import Display\n"
+          ++ (if hasSparkle then "import Sparkle\n" else "")
+          ++ (if hasHesper  then "import Hesper.WGSL.DSL\n" else "")
+      else do
+        -- Probe for each module via LEAN_PATH (set by the kernelspec).
+        -- A module foo.bar.Baz lives at <root>/foo/bar/Baz.olean for
+        -- some root in LEAN_PATH; if none of those roots has the
+        -- file, the module isn't available and we skip its import.
+        let leanPath ← Lean.searchPathRef.get
+        let probe (rel : System.FilePath) : IO Bool := do
+          for root in leanPath do
+            if (← (root / rel).pathExists) then return true
+          return false
+        let hasDisplay ← probe ("Display.olean" : System.FilePath)
+        let hasSparkle ← probe ("Sparkle.olean" : System.FilePath)
+        let hasHesper  ← probe (("Hesper" : System.FilePath) / "WGSL" / "DSL.olean")
+        pure <|
+          (if hasDisplay then "import Display\n" else "")
+          ++ (if hasSparkle then "import Sparkle\n" else "")
+          ++ (if hasHesper  then "import Hesper.WGSL.DSL\n" else "")
       pure (imports ++ input)
     else
       pure input
