@@ -34,6 +34,24 @@ lean_exe testmain where
   root := `TestMain
   srcDir := "src"
 
+-- `Convert` lib + `xlean-convert` CLI: convert Markdown chapters
+-- (with fenced ```lean code blocks) into Jupyter `.ipynb`
+-- notebooks or jupytext-style `.lean:percent` source.  Lets
+-- authors keep tutorial chapters in plain Markdown (reviewable,
+-- Git-diff-friendly) and generate the runnable artefacts.
+lean_lib Convert where
+  srcDir := "src"
+
+lean_exe «xlean-convert» where
+  root := `ConvertMain
+  srcDir := "src"
+  supportInterpreter := true
+
+lean_exe «convert-test» where
+  root := `ConvertTest
+  srcDir := "src"
+  supportInterpreter := true
+
 /--
 Read `XEUS_LEAN_EXTRA_LIBS` from the process environment at lakefile-load
 time. Whitespace-separated tokens, each appended verbatim to xlean's link
