@@ -85,16 +85,18 @@ test.describe.serial('rich display', () => {
       '#eval do Display.waveform "clk" [0,1,0,1,0,1,0,1] (bitWidth := 1) (cellW := 30) (height := 60)'
     );
     // Diagnostic: when CI fails this assertion, the screenshot shows
-    // a `text/plain` output area instead of an SVG. Dump what's
-    // actually inside the cell so we can see whether `#eval` itself
-    // produced an error or whether the SVG is just being rendered
-    // through a different MIME path than the selector expects.
-    const html = await output.innerHTML().catch(() => '<<no html>>');
-    const text = await output.textContent().catch(() => '<<no text>>');
-    console.log(`[Waveform diag] outerHTML[0..800]: ${html.slice(0, 800)}`);
-    console.log(`[Waveform diag] textContent[0..400]: ${(text ?? '').slice(0, 400)}`);
+    // a `text/plain` output area instead of an SVG. Capture what's
+    // actually inside the cell and surface it through the assertion
+    // failure message so it shows up in the CI failure report (not
+    // just the worker stdout buffer, which list-reporter swallows).
+    const html = (await output.innerHTML().catch(() => '<<no html>>')).slice(0, 800);
+    const text = ((await output.textContent().catch(() => '<<no text>>')) ?? '').slice(0, 400);
     // Should produce an SVG with a path element (the waveform line)
-    await expect(output.locator('svg, img')).toBeVisible();
+    await expect(output.locator('svg, img'),
+      `Waveform output had no svg/img.\n` +
+      `--- textContent[0..400] ---\n${text}\n` +
+      `--- outerHTML[0..800] ---\n${html}`
+    ).toBeVisible();
   });
 });
 
