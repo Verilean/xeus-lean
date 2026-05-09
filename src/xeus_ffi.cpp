@@ -245,21 +245,36 @@ public:
             std::string captured = end_stdout_capture();
 
             // First pass: pull MIME payloads (Display.html/.svg/.waveform/...)
-            // out of the result string, leaving any ordinary `#eval` /
-            // `IO.println` output behind in `plain`. The Lean side packs
-            // both into one string so we don't have to round-trip a JSON
-            // object across the FFI just for the common case.
+            // out of the captured stdout AND the result string, leaving
+            // ordinary `#eval` / `IO.println` text behind in `plain`.
+            //
+            // Both channels carry MIME markers in practice:
+            //   - `result_json` is what Lean's message log produced via
+            //     `logInfo` / `logInfoAt` (xeus-lean's `Display.html`
+            //     etc. all go through this path inside an `elab`).
+            //   - `captured` is whatever Lean's `IO.println` wrote
+            //     directly to stdout from inside an `elab`/`#eval`
+            //     command.  Downstream packages (e.g. Sparkle.Display)
+            //     emit MIME markers from `IO.println` so a single
+            //     `#eval Sparkle.Display.Diagram.blockDiagram d` can
+            //     produce a rendered SVG cell.  Without this scan
+            //     those bytes would be forwarded as raw text and the
+            //     marker would show up as a literal `MIME:image/...`
+            //     string.
+            std::string plain_captured;
+            extract_mime_payloads(captured, pub_data, plain_captured);
             std::string plain;
             extract_mime_payloads(result_json, pub_data, plain);
 
-            // Prepend any captured stdout. We do this *before* the
-            // pre-formatted Lean messages so the order matches what
-            // happened: elab-time prints first, then the result text.
-            if (!captured.empty()) {
-                if (!plain.empty() && !captured.empty() && captured.back() != '\n') {
-                    captured.push_back('\n');
+            // Prepend the (now MIME-stripped) captured stdout. We do
+            // this *before* the pre-formatted Lean messages so the
+            // order matches what happened: elab-time prints first,
+            // then the result text.
+            if (!plain_captured.empty()) {
+                if (!plain.empty() && plain_captured.back() != '\n') {
+                    plain_captured.push_back('\n');
                 }
-                plain = captured + plain;
+                plain = plain_captured + plain;
             }
 
             if (!plain.empty()) {
