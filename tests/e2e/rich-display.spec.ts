@@ -43,14 +43,6 @@ test.describe.serial('rich display', () => {
   });
 
   test('#latex renders via MathJax', async () => {
-    // FLAKY in CI: passes locally in ~1 s but the kernel sits busy for
-    // 3+ minutes on the GitHub Actions runner before producing any
-    // output. Suspect is macro-time elaboration of `#latex` pulling in
-    // additional Lean/Std modules which OOM-thrashes the runner. Re-
-    // enable when we either (a) measure what `#latex` is doing on the
-    // worker thread, or (b) drop CI back to a single-tarball Std + Lean
-    // build that fits in the runner's working set.
-    test.skip(!!process.env.CI, 'flaky in CI — see jupyter.ts comment');
     const output = await runCell(
       sharedPage,
       String.raw`#latex "\\int_0^1 x^2 \\, dx = \\frac{1}{3}"`
@@ -61,9 +53,6 @@ test.describe.serial('rich display', () => {
   });
 
   test('#svg embeds an SVG', async () => {
-    // FLAKY in CI — see #latex below; the GH Actions runner appears
-    // unable to keep the kernel responsive after a couple of cells.
-    test.skip(!!process.env.CI, 'flaky in CI — see jupyter.ts comment');
     const output = await runCell(
       sharedPage,
       String.raw`#svg "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\"><circle cx=\"20\" cy=\"20\" r=\"18\" fill=\"red\"/></svg>"`
@@ -74,7 +63,6 @@ test.describe.serial('rich display', () => {
   });
 
   test('#eval do loop with Display.latex', async () => {
-    test.skip(!!process.env.CI, 'flaky in CI — see jupyter.ts comment');
     const output = await runCell(
       sharedPage,
       '#eval do\n  for i in [1, 2, 3] do\n    Display.latex s!"{i}^2 = {i * i}"'
@@ -83,8 +71,6 @@ test.describe.serial('rich display', () => {
   });
 
   test('#md renders Markdown', async () => {
-    // Same flakiness as `#latex` above on the GitHub Actions runner.
-    test.skip(!!process.env.CI, 'flaky in CI — see jupyter.ts comment');
     const output = await runCell(
       sharedPage,
       String.raw`#md "# Title\n\n**bold** text"`
@@ -93,11 +79,21 @@ test.describe.serial('rich display', () => {
   });
 
   test('Waveform SVG display', async () => {
-    test.skip(!!process.env.CI, 'flaky in CI — see jupyter.ts comment');
-    // Use Display.waveform to render an SVG waveform
+    // FLAKY in CI ONLY: passes locally (4.4 min, 9/9) but on the GH
+    // Actions runner the cell never produces an output area within
+    // the 180 s per-cell timeout, even though the kernel logs show
+    // no error. Tried both `#eval do Display.waveform ...` (placeholder
+    // error) and `#eval Display.waveform ...` (silent timeout); both
+    // surface differently and neither reproduces locally. Suspect
+    // a runner-specific scheduling issue between the prior test's
+    // Ctrl/Shift+Enter and the next runCell's editor focus, since
+    // the kernel never logs an `execute_request_impl: ENTER` for
+    // this cell on the failing runs. Re-enable when we have a
+    // small, runnable repro that triggers locally.
+    test.skip(!!process.env.CI, 'CI-only flake — see comment');
     const output = await runCell(
       sharedPage,
-      '#eval do Display.waveform "clk" [0,1,0,1,0,1,0,1] (bitWidth := 1) (cellW := 30) (height := 60)'
+      '#eval Display.waveform "clk" [0,1,0,1,0,1,0,1] (bitWidth := 1) (cellW := 30) (height := 60)'
     );
     // Should produce an SVG with a path element (the waveform line)
     await expect(output.locator('svg, img')).toBeVisible();

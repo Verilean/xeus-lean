@@ -22,8 +22,28 @@ COPY pixi.toml pixi.lock* ./
 RUN pixi install -e wasm-build || pixi install -e wasm-build --no-lockfile-update
 RUN pixi install -e wasm-host || pixi install -e wasm-host --no-lockfile-update
 
-# Copy source
-COPY . .
+# Copy source.
+#
+# Split into per-directory COPYs (instead of a single `COPY . .`) so
+# that editing files outside this list — tests/, docs/, README, the
+# other Dockerfiles — does NOT bust the heavy `lake build` / `cmake`
+# / `emmake` layers below. Keep this list narrow: anything the
+# WASM build actually reads, and nothing else.
+#
+# When you add a top-level path the build needs, append it here so
+# the build remains hermetic.
+COPY lakefile.lean lake-manifest.json lean-toolchain ./
+COPY CMakeLists.txt ./
+COPY cmake/        ./cmake/
+COPY include/      ./include/
+COPY share/        ./share/
+COPY scripts/      ./scripts/
+COPY src/          ./src/
+COPY examples/     ./examples/
+COPY hesper/       ./hesper/
+COPY hesper-wasm/  ./hesper-wasm/
+COPY notebooks/    ./notebooks/
+COPY test_wasm_node.cpp ./
 
 # Build Lean REPL (generates .c files needed by cmake)
 # Display is a separate lib providing #html/#latex/#md/#svg commands;

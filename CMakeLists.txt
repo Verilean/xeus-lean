@@ -483,12 +483,20 @@ ${_init_stub_decls}}
             # so that the REPL can `import Display` at runtime. This makes
             # #html / #latex / #md / #svg / #json commands available to
             # user cells without an explicit import.
+            #
+            # CommBus is imported by Display, so its olean must be in the
+            # VFS too — otherwise `import Display` fails at the header
+            # stage with "unknown module prefix 'CommBus'", which then
+            # cascades into Init/Std/Lean/Sparkle being skipped and the
+            # cell crashing on basic identifiers like `IO.println`.
             set(DISPLAY_OLEAN_SRC "${CMAKE_SOURCE_DIR}/.lake/build/lib/lean")
-            foreach(_ext olean olean.server olean.private ir)
-                if(EXISTS "${DISPLAY_OLEAN_SRC}/Display.${_ext}")
-                    file(COPY "${DISPLAY_OLEAN_SRC}/Display.${_ext}" DESTINATION "${LEAN_OLEAN_STAGING}/")
-                    message(STATUS "Embedding Display.${_ext} in WASM VFS")
-                endif()
+            foreach(_mod Display CommBus)
+                foreach(_ext olean olean.server olean.private ir)
+                    if(EXISTS "${DISPLAY_OLEAN_SRC}/${_mod}.${_ext}")
+                        file(COPY "${DISPLAY_OLEAN_SRC}/${_mod}.${_ext}" DESTINATION "${LEAN_OLEAN_STAGING}/")
+                        message(STATUS "Embedding ${_mod}.${_ext} in WASM VFS")
+                    endif()
+                endforeach()
             endforeach()
             # Copy Sparkle .olean to assets (dynamic load, not embed)
             set(SPARKLE_OLEAN_SRC "${CMAKE_SOURCE_DIR}/examples/sparkle/.lake/packages/sparkle/.lake/build/lib/lean")
