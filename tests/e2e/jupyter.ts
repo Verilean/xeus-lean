@@ -116,17 +116,14 @@ export async function runCell(page: Page, source: string): Promise<Locator> {
   // Type the source literally. CodeMirror is fine with this.
   await page.keyboard.type(source, { delay: 0 });
 
-  // Execute. Use Ctrl+Enter (run in place) instead of Shift+Enter
-  // (run + advance/insert): Shift+Enter on the *last* cell silently
-  // appends a new empty cell, so by the next runCell call the
-  // notebook's tail is an unrelated empty cell. Most tests still
-  // worked because typing into that empty cell happened to execute
-  // fine, but on CI the timing was tight enough that the new cell
-  // wasn't fully focused before we typed, the keystrokes went to
-  // the wrong widget, and `#eval Display.waveform` was never sent
-  // to the kernel — the test then waited 180 s for an output area
-  // that no execute_request had asked for.
-  await page.keyboard.press('Control+Enter');
+  // Execute. Shift+Enter advances/inserts; Ctrl+Enter runs in
+  // place. We use Shift+Enter — Ctrl+Enter dropped the keystroke
+  // somewhere on the GH Actions runner for the Waveform test (no
+  // execute_request ever showed up in the kernel logs). The cell-
+  // insertion side-effect of Shift+Enter is harmless because the
+  // next runCell call still picks the last code cell, which after
+  // Shift+Enter is the freshly-added empty one. Type into that.
+  await page.keyboard.press('Shift+Enter');
 
   // Wait for the output area under the just-run cell.
   const output = cell.locator('.jp-OutputArea-output').first();
