@@ -79,24 +79,20 @@ test.describe.serial('rich display', () => {
   });
 
   test('Waveform SVG display', async () => {
-    // Use Display.waveform to render an SVG waveform
+    // Use Display.waveform to render an SVG waveform.
+    //
+    // Note: write `#eval Display.waveform ...` (no `do`). With `do`
+    // the elaborator has to synthesize the monad parameter and on
+    // some toolchain/build combos that fails with
+    //   "don't know how to synthesize placeholder ⊢ Type"
+    // because nothing else in the bare `do` block constrains `m`.
+    // Display.waveform : IO Unit, so direct `#eval` is enough.
     const output = await runCell(
       sharedPage,
-      '#eval do Display.waveform "clk" [0,1,0,1,0,1,0,1] (bitWidth := 1) (cellW := 30) (height := 60)'
+      '#eval Display.waveform "clk" [0,1,0,1,0,1,0,1] (bitWidth := 1) (cellW := 30) (height := 60)'
     );
-    // Diagnostic: when CI fails this assertion, the screenshot shows
-    // a `text/plain` output area instead of an SVG. Capture what's
-    // actually inside the cell and surface it through the assertion
-    // failure message so it shows up in the CI failure report (not
-    // just the worker stdout buffer, which list-reporter swallows).
-    const html = (await output.innerHTML().catch(() => '<<no html>>')).slice(0, 800);
-    const text = ((await output.textContent().catch(() => '<<no text>>')) ?? '').slice(0, 400);
     // Should produce an SVG with a path element (the waveform line)
-    await expect(output.locator('svg, img'),
-      `Waveform output had no svg/img.\n` +
-      `--- textContent[0..400] ---\n${text}\n` +
-      `--- outerHTML[0..800] ---\n${html}`
-    ).toBeVisible();
+    await expect(output.locator('svg, img')).toBeVisible();
   });
 });
 
