@@ -104,7 +104,11 @@ docker-e2e-image: docker-wasm-builder
 	docker build -f Dockerfile.e2e -t $(E2E_IMAGE) .
 
 e2e-docker: docker-e2e-image
-	docker run --rm --init $(E2E_IMAGE)
+	# Pass CI=1 so the local run mirrors the GH Actions env: any
+	# `test.skip(!!process.env.CI, ...)` in the suite must behave the
+	# same way locally as in CI, otherwise we re-discover the same
+	# flake every time we drop a CI skip.
+	docker run --rm --init -e CI=1 $(E2E_IMAGE)
 
 e2e-docker-update: docker-e2e-image
 	# Regenerate snapshots inside the container, then copy them back.
