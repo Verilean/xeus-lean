@@ -91,7 +91,11 @@ test.describe.serial('rich display', () => {
       '#eval (do\n  for i in [1, 2, 3] do\n    Display.latex s!"{i}^2 = {i * i}"\n : IO Unit)'
     );
     await assertNoError(output);
-    await expect(output).toContainText('1');
+    // Only the LAST `Display.latex` call is visible in the cell
+    // (each invocation replaces the previous text/latex payload).
+    // MathJax renders `3^2 = 9` so `textContent` collapses to
+    // "32=9" — assert on `=` which every iteration contains.
+    await expect(output).toContainText('=');
   });
 
   test('#md renders Markdown', async () => {
