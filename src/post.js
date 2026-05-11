@@ -31,8 +31,15 @@ Module.preRun.push(function () {
 
   function log(msg) { try { console.error('[olean] ' + msg); } catch(_) {} }
 
-  if (typeof XMLHttpRequest === 'undefined') {
-    log('XMLHttpRequest unavailable — skipping dynamic olean load');
+  // We used to do `new XMLHttpRequest(); xhr.open(..., false)` (sync XHR)
+  // but JupyterLite's service worker on GitHub Pages silently fails the
+  // request — the response never reaches the worker thread, the manifest
+  // is treated as missing, and the kernel boots with no Init/Std/Lean
+  // modules. Switch to async fetch + Module.addRunDependency, which lets
+  // emscripten block the wasm `main()` until the tarballs are unpacked.
+
+  if (typeof fetch !== 'function') {
+    log('fetch unavailable — skipping dynamic olean load');
     return;
   }
 
@@ -49,33 +56,40 @@ Module.preRun.push(function () {
   candidates.push('/xeus/wasm-host/olean/');
   candidates.push('./olean/');
 
-  var MANIFEST = null;
-  var BASE = '';
-  for (var i = 0; i < candidates.length; i++) {
-    try {
-      var xhr = new XMLHttpRequest();
-      xhr.open('GET', candidates[i] + 'manifest-v2.json', false);
-      xhr.send();
-      if (xhr.status === 200) {
-        try {
-          MANIFEST = JSON.parse(xhr.responseText);
-          BASE = candidates[i];
-          log('manifest-v2 found at ' + BASE);
-          break;
-        } catch(parseErr) {
-          log('manifest-v2 at ' + candidates[i] + ' did not parse: ' + parseErr);
+  var depTag = 'olean-dynamic-load';
+  Module.addRunDependency(depTag);
+
+  (async function loadOleans() {
+    var MANIFEST = null;
+    var BASE = '';
+    for (var i = 0; i < candidates.length; i++) {
+      try {
+        var resp = await fetch(candidates[i] + 'manifest-v2.json');
+        if (resp.ok) {
+          try {
+            MANIFEST = await resp.json();
+            BASE = candidates[i];
+            log('manifest-v2 found at ' + BASE);
+            break;
+          } catch (parseErr) {
+            log('manifest-v2 at ' + candidates[i] + ' did not parse: ' + parseErr);
+          }
         }
-      }
-    } catch(e) { /* try next */ }
-  }
-  if (!MANIFEST) { log('no manifest-v2.json — only embedded modules will work'); return; }
+      } catch (e) { /* try next */ }
+    }
+    if (!MANIFEST) {
+      log('no manifest-v2.json — only embedded modules will work');
+      Module.removeRunDependency(depTag);
+      return;
+    }
 
-  if (typeof fzstd === 'undefined' || typeof fzstd.decompress !== 'function') {
-    log('fzstd not loaded — cannot decompress tarballs (skipping)');
-    return;
-  }
+    if (typeof fzstd === 'undefined' || typeof fzstd.decompress !== 'function') {
+      log('fzstd not loaded — cannot decompress tarballs (skipping)');
+      Module.removeRunDependency(depTag);
+      return;
+    }
 
-  var ASSET_BASE = MANIFEST.baseUrl || BASE;
+    var ASSET_BASE = MANIFEST.baseUrl || BASE;
 
   // ---- 2. Tar parser (ustar regular files only) -------------------
   function parseTar(buf) {
@@ -114,27 +128,25 @@ Module.preRun.push(function () {
   }
 
   // ---- 4. Fetch + extract one tarball into /lib/lean/ -------------
-  function loadModuleSync(modName, info) {
+  async function loadModule(modName, info) {
     var url = ASSET_BASE + info.asset;
     log('fetching ' + url + ' (' + Math.round(info.size / 1024 / 1024) + ' MB compressed, ' + info.files + ' files)');
 
     var compressed;
     try {
-      var xhr = new XMLHttpRequest();
-      xhr.open('GET', url, false);
-      xhr.responseType = 'arraybuffer';
-      xhr.send();
-      if (xhr.status !== 200) { log(modName + ': fetch failed status=' + xhr.status); return 0; }
-      compressed = new Uint8Array(xhr.response);
-    } catch(e) { log(modName + ': fetch error: ' + e); return 0; }
+      var resp = await fetch(url);
+      if (!resp.ok) { log(modName + ': fetch failed status=' + resp.status); return 0; }
+      var ab = await resp.arrayBuffer();
+      compressed = new Uint8Array(ab);
+    } catch (e) { log(modName + ': fetch error: ' + e); return 0; }
 
     var raw;
     try { raw = fzstd.decompress(compressed); }
-    catch(e) { log(modName + ': decompress error: ' + e); return 0; }
+    catch (e) { log(modName + ': decompress error: ' + e); return 0; }
 
     var entries;
     try { entries = parseTar(raw); }
-    catch(e) { log(modName + ': tar parse error: ' + e); return 0; }
+    catch (e) { log(modName + ': tar parse error: ' + e); return 0; }
 
     var written = 0;
     for (var k = 0; k < entries.length; k++) {
@@ -144,10 +156,10 @@ Module.preRun.push(function () {
       var slash = vfsPath.lastIndexOf('/');
       if (slash > 0) mkdirP(vfsPath.substring(0, slash));
       try {
-        try { FS.stat(vfsPath); continue; } catch(_) {}
+        try { FS.stat(vfsPath); continue; } catch (_) {}
         FS.writeFile(vfsPath, e.data);
         written++;
-      } catch(_) { /* per-file failure is non-fatal */ }
+      } catch (_) { /* per-file failure is non-fatal */ }
     }
     log(modName + ': wrote ' + written + ' / ' + entries.length + ' files to /lib/lean/');
     return written;
@@ -157,9 +169,14 @@ Module.preRun.push(function () {
   var totalWritten = 0;
   for (var mod in MANIFEST.modules) {
     if (Object.prototype.hasOwnProperty.call(MANIFEST.modules, mod)) {
-      try { totalWritten += loadModuleSync(mod, MANIFEST.modules[mod]); }
+      try { totalWritten += await loadModule(mod, MANIFEST.modules[mod]); }
       catch(e) { log(mod + ': load threw: ' + e); }
     }
   }
   log('done — ' + totalWritten + ' files written across ' + Object.keys(MANIFEST.modules).length + ' modules');
+    Module.removeRunDependency(depTag);
+  })().catch(function (err) {
+    log('loadOleans crashed: ' + err);
+    try { Module.removeRunDependency(depTag); } catch (_) {}
+  });
 });

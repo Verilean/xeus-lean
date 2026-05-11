@@ -535,9 +535,19 @@ extern \"C\" LEAN_EXPORT lean_obj_res lean_uv_udp_cancel_recv(b_obj_arg socket) 
     # GMP: build mini-gmp from GMP source for wasm64 compatibility
     # mini-gmp is a portable, single-file GMP subset that works on any platform.
     # Full GMP uses arch-specific assembly; mini-gmp is pure C.
+    #
+    # FetchContent's URL accepts a list and tries each in order, so we
+    # fall back through ftp.gnu.org → gmplib.org → ftpmirror.gnu.org.
+    # ftp.gnu.org is intermittently unreachable from some networks and
+    # the local docker build was failing on it; gmplib.org is the
+    # upstream-recommended primary site anyway.
     set(GMP_VERSION "6.3.0")
     FetchContent_Declare(gmp
-        URL "https://ftp.gnu.org/gnu/gmp/gmp-${GMP_VERSION}.tar.xz"
+        URL
+            "https://gmplib.org/download/gmp/gmp-${GMP_VERSION}.tar.xz"
+            "https://ftpmirror.gnu.org/gnu/gmp/gmp-${GMP_VERSION}.tar.xz"
+            "https://ftp.gnu.org/gnu/gmp/gmp-${GMP_VERSION}.tar.xz"
+        URL_HASH SHA256=a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
     FetchContent_GetProperties(gmp)
     if(NOT gmp_POPULATED)
