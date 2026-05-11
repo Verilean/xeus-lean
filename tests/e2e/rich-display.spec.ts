@@ -80,9 +80,15 @@ test.describe.serial('rich display', () => {
   });
 
   test('#eval do loop with Display.latex', async () => {
+    // Annotate the do-block as `IO Unit`; otherwise the elaborator
+    // can't synthesize the `ForIn` instance because the monad `m`
+    // is unconstrained — it sees `Display.latex : IO Unit` only
+    // *inside* the body, by which time the `for ... in ... do ...`
+    // notation has already failed instance resolution. Adding the
+    // `: IO Unit` ascription pins `m := IO` up front.
     const output = await runCell(
       sharedPage,
-      '#eval do\n  for i in [1, 2, 3] do\n    Display.latex s!"{i}^2 = {i * i}"'
+      '#eval (do\n  for i in [1, 2, 3] do\n    Display.latex s!"{i}^2 = {i * i}"\n : IO Unit)'
     );
     await assertNoError(output);
     await expect(output).toContainText('1');
