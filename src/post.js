@@ -44,6 +44,17 @@ Module.preRun.push(function () {
   }
 
   // ---- 1. Locate manifest -----------------------------------------
+  // Debug: emscripten environment vars that influence URL resolution
+  try {
+    log('scriptDirectory=' + (typeof scriptDirectory !== 'undefined' ? scriptDirectory : '<undefined>'));
+    if (typeof location !== 'undefined' && location) {
+      log('location.href=' + (location.href || '<unset>'));
+      log('location.pathname=' + (location.pathname || '<unset>'));
+    } else {
+      log('location=<undefined>');
+    }
+  } catch (_) {}
+
   var candidates = [];
   if (typeof scriptDirectory !== 'undefined' && scriptDirectory) {
     var parts = scriptDirectory.split('/');
@@ -59,12 +70,32 @@ Module.preRun.push(function () {
   var depTag = 'olean-dynamic-load';
   Module.addRunDependency(depTag);
 
+  // Also try locations relative to the document (works on GitHub
+  // Pages where the page is served from /<repo>/lab/ and assets at
+  // /<repo>/xeus/wasm-host/olean/). `scriptDirectory` is the worker
+  // bundle URL, but JupyterLite serves the wasm worker from a
+  // service-worker shadow URL that doesn't include the site prefix,
+  // so the candidates we computed from it can miss.
+  try {
+    if (typeof location !== 'undefined' && location && location.pathname) {
+      var pn = location.pathname;
+      var labIdx = pn.indexOf('/lab/');
+      var base = labIdx >= 0 ? pn.substring(0, labIdx) : pn.replace(/\/[^\/]*$/, '');
+      if (base && !base.endsWith('/')) base += '/';
+      candidates.unshift(base + 'xeus/wasm-host/olean/');
+    }
+  } catch (_) {}
+
+  log('candidates: ' + JSON.stringify(candidates));
+
   (async function loadOleans() {
     var MANIFEST = null;
     var BASE = '';
     for (var i = 0; i < candidates.length; i++) {
+      var url = candidates[i] + 'manifest-v2.json';
       try {
-        var resp = await fetch(candidates[i] + 'manifest-v2.json');
+        var resp = await fetch(url);
+        log('try ' + url + ' -> ' + resp.status);
         if (resp.ok) {
           try {
             MANIFEST = await resp.json();
@@ -72,10 +103,10 @@ Module.preRun.push(function () {
             log('manifest-v2 found at ' + BASE);
             break;
           } catch (parseErr) {
-            log('manifest-v2 at ' + candidates[i] + ' did not parse: ' + parseErr);
+            log('manifest-v2 at ' + url + ' did not parse: ' + parseErr);
           }
         }
-      } catch (e) { /* try next */ }
+      } catch (e) { log('fetch ' + url + ' threw: ' + e); }
     }
     if (!MANIFEST) {
       log('no manifest-v2.json — only embedded modules will work');
