@@ -55,7 +55,40 @@ Module.preRun.push(function () {
     }
   } catch (_) {}
 
+  // Build candidate base URLs.
+  //
+  // Tricky case: on GitHub Pages the kernel ships under
+  //   /<repo>/extensions/@jupyterlite/xeus-extension/static/...
+  // and the olean assets are at
+  //   /<repo>/xeus/wasm-host/olean/
+  // The previous version split on `xeus` to find the site root, but
+  // `xeus-extension` contains "xeus" as a substring (not a path
+  // segment) — actually `indexOf('xeus')` returns -1 in that case
+  // (path segments are "xeus-lean", "xeus-extension"; no segment is
+  // literally "xeus"), so the split-on-'xeus' branch silently does
+  // nothing on Pages.
+  //
+  // Strategy: peel known JupyterLite asset roots off `location.pathname`
+  // ('/lab/', '/extensions/', '/files/', '/repl/', '/tree/') to
+  // recover the site root, then append 'xeus/wasm-host/olean/'.
   var candidates = [];
+  try {
+    if (typeof location !== 'undefined' && location && location.pathname) {
+      var pn = location.pathname;
+      var siteRoot = pn;
+      var markers = ['/lab/', '/extensions/', '/files/', '/repl/', '/tree/'];
+      for (var mi = 0; mi < markers.length; mi++) {
+        var idx = pn.indexOf(markers[mi]);
+        if (idx >= 0) { siteRoot = pn.substring(0, idx); break; }
+      }
+      // If no marker matched, fall back to the directory containing
+      // the current resource.
+      if (siteRoot === pn) siteRoot = pn.replace(/\/[^\/]*$/, '');
+      if (!siteRoot.endsWith('/')) siteRoot += '/';
+      candidates.push(siteRoot + 'xeus/wasm-host/olean/');
+    }
+  } catch (_) {}
+
   if (typeof scriptDirectory !== 'undefined' && scriptDirectory) {
     var parts = scriptDirectory.split('/');
     var xeusIdx = parts.indexOf('xeus');
@@ -69,22 +102,6 @@ Module.preRun.push(function () {
 
   var depTag = 'olean-dynamic-load';
   Module.addRunDependency(depTag);
-
-  // Also try locations relative to the document (works on GitHub
-  // Pages where the page is served from /<repo>/lab/ and assets at
-  // /<repo>/xeus/wasm-host/olean/). `scriptDirectory` is the worker
-  // bundle URL, but JupyterLite serves the wasm worker from a
-  // service-worker shadow URL that doesn't include the site prefix,
-  // so the candidates we computed from it can miss.
-  try {
-    if (typeof location !== 'undefined' && location && location.pathname) {
-      var pn = location.pathname;
-      var labIdx = pn.indexOf('/lab/');
-      var base = labIdx >= 0 ? pn.substring(0, labIdx) : pn.replace(/\/[^\/]*$/, '');
-      if (base && !base.endsWith('/')) base += '/';
-      candidates.unshift(base + 'xeus/wasm-host/olean/');
-    }
-  } catch (_) {}
 
   log('candidates: ' + JSON.stringify(candidates));
 
