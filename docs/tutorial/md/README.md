@@ -32,12 +32,12 @@ chapter without firing up a kernel.
 - **Ch07 — [`HashMap` / `HashSet` / `TreeMap`](Ch07_HashMap.md)** — keyed containers, counters, dedup
 - **Ch08 — [`Option` / `Except`](Ch08_Errors.md)** — error handling without exceptions, `do` notation, `<|>`
 
-### Part III — I/O and effects *(coming soon)*
-- Ch09 — The `IO` monad and `do` notation
-- Ch10 — File I/O
-- Ch11 — Processes and pipes
-- Ch12 — Sockets and networking
-- Ch13 — `IO.Ref`, tasks, mutexes
+### Part III — I/O and effects
+- **Ch09 — [The `IO` monad and `do` notation](Ch09_IO.md)** — `pure` / `←` / `let mut` / `IO.Ref`, clock + random, `try` / `catch`
+- **Ch10 — [File I/O](Ch10_FileIO.md)** — whole-file + streaming + binary + directories, `System.FilePath`, `/` operator
+- **Ch11 — [Processes and pipes](Ch11_Processes.md)** — `IO.Process.run` / `output` / `spawn`, stdin pipes, pipe-two-children, kill / wait
+- **Ch12 — [Sockets and networking](Ch12_Network.md)** — `Std.Net` TCP/UDP, HTTP via `curl` + `Lean.Data.Json`
+- **Ch13 — [Tasks, refs, mutexes](Ch13_Concurrency.md)** — `IO.asTask` / `wait`, `Std.Mutex`, `Std.Channel`, race + cooperative cancel
 
 ### Part IV — Optional deeper dives *(coming soon)*
 - Ch14 — JSON
