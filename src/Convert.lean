@@ -834,6 +834,17 @@ def defaultStylesheet : String :=
   "  font-size: 0.92em;\n" ++
   "}\n" ++
   "main.content div.output.svg svg { max-width: 100%; height: auto; }\n" ++
+  -- "Open in JupyterLite" button shown at the top of each
+  -- chapter when a runnable notebook exists alongside it.
+  "main.content .jlite-bar {\n" ++
+  "  margin: 0 0 1.2em; text-align: right;\n" ++
+  "}\n" ++
+  "main.content a.jlite-btn {\n" ++
+  "  display: inline-block; padding: 0.4em 0.9em;\n" ++
+  "  background: #ffca28; color: #000; border-radius: 4px;\n" ++
+  "  font-size: 0.85em; font-weight: 500; text-decoration: none;\n" ++
+  "}\n" ++
+  "main.content a.jlite-btn:hover { background: #ffb300; text-decoration: none; }\n" ++
   "@media (max-width: 800px) {\n" ++
   "  .layout { flex-direction: column; }\n" ++
   "  aside.sidebar { width: 100%; height: auto; position: static; padding: 1em 0; }\n" ++
@@ -847,13 +858,19 @@ def defaultStylesheet : String :=
     a single-column layout suitable for standalone `--to html`.
     `prev?` / `next?` are filenames (e.g. "Ch00.html") used for
     the navigation footer; `relRoot` is the path prefix from this
-    page to the site root (typically "./"). -/
+    page to the site root (typically "./").
+
+    `jupyterliteUrl?` is an optional URL that opens this chapter's
+    runnable notebook in JupyterLite — rendered as an "Open in
+    JupyterLite ↗" button next to the chapter title.  Skip it for
+    pages that don't have a corresponding live notebook. -/
 def cellsToHtml (cells : Array Cell)
     (title : Option String := none)
     (prev? : Option (String × String) := none)
     (next? : Option (String × String) := none)
     (relRoot : String := "./")
-    (sidebar : String := "") : String :=
+    (sidebar : String := "")
+    (jupyterliteUrl? : Option String := none) : String :=
   let actualTitle := title.getD (chapterTitle cells)
   let body := cells.foldl (fun acc c => acc ++ cellToHtml c) ""
   let navLink : Option (String × String) → String → String := fun p arrow =>
@@ -864,13 +881,21 @@ def cellsToHtml (cells : Array Cell)
       let (_, short) := stripChapterPrefix t
       "<a href=\"" ++ escHtml file ++ "\">" ++ arrow ++ " " ++ escHtml short ++ "</a>"
     | none => "<span></span>"
+  let jliteBar : String :=
+    match jupyterliteUrl? with
+    | some url =>
+      "<div class=\"jlite-bar\">\n" ++
+      "<a class=\"jlite-btn\" href=\"" ++ escHtml url ++ "\" target=\"_blank\" rel=\"noopener\">" ++
+      "▶ Open this chapter in JupyterLite</a>\n" ++
+      "</div>\n"
+    | none => ""
   let nav :=
     "<nav class=\"chapter-nav\">\n" ++
     navLink prev? "←" ++ "\n" ++
     "<a class=\"toc\" href=\"" ++ relRoot ++ "index.html\">Contents</a>\n" ++
     navLink next? "→" ++ "\n" ++
     "</nav>\n"
-  let content := "<main class=\"content\">\n" ++ body ++ nav ++ "</main>\n"
+  let content := "<main class=\"content\">\n" ++ jliteBar ++ body ++ nav ++ "</main>\n"
   let inner :=
     if sidebar.isEmpty then content
     else "<div class=\"layout\">\n" ++ sidebar ++ content ++ "</div>\n"

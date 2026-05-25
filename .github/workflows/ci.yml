@@ -234,6 +234,30 @@ jobs:
         echo "=== manifest-v2.json ==="
         cat _olean_packed/manifest-v2.json
 
+    - name: Build xlean-convert (for tutorial site + ipynb generation)
+      run: |
+        lake build xlean-convert
+        ls -lh .lake/build/bin/xlean-convert
+
+    - name: Generate tutorial notebooks (md → ipynb)
+      run: |
+        # Each Ch*.md in docs/tutorial/md becomes a runnable .ipynb
+        # alongside the rest of the notebooks/ directory so JupyterLite
+        # ships them with the kernel.  Users can then open
+        #   /lab/index.html?path=Ch01_Values.ipynb
+        # and execute the cells live in the browser.
+        mkdir -p notebooks
+        if [ -d docs/tutorial/md ]; then
+          for f in docs/tutorial/md/Ch*.md; do
+            [ -e "$f" ] || continue
+            out="notebooks/$(basename "$f" .md).ipynb"
+            .lake/build/bin/xlean-convert --to ipynb "$f" -o "$out"
+            echo "wrote $out"
+          done
+        else
+          echo "docs/tutorial/md not present; skipping notebook generation"
+        fi
+
     - name: Build JupyterLite site
       run: |
         mkdir -p notebooks
@@ -260,6 +284,28 @@ jobs:
           du -sh _output/xeus/wasm-host/olean/
           echo "=== Total _output size ==="
           du -sh _output/
+        fi
+
+    - name: Build "Learn Lean 4" tutorial site (static HTML)
+      run: |
+        # Reads docs/tutorial/md/Ch*.md and emits a tintin-style
+        # multi-chapter site under _output/tutorial/.  The site is
+        # static (no kernel, no JS evaluation); each chapter's
+        # already-baked ```output[:MIME] fences are rendered with
+        # the right CSS class.  Links from there point at the
+        # matching .ipynb files we generated in notebooks/ above,
+        # which JupyterLite serves at /lab/index.html?path=...
+        if [ -d docs/tutorial/md ]; then
+          # `_output/tutorial/Ch01.html` lives one directory below
+          # `_output/`, so `../lab/index.html` resolves to the same
+          # JupyterLite that already ships at the site root.
+          .lake/build/bin/xlean-convert --site docs/tutorial/md \
+            -o _output/tutorial \
+            --title "Learn Lean 4" \
+            --jupyterlite-base ../lab/index.html
+          ls -lh _output/tutorial/
+        else
+          echo "docs/tutorial/md not present; skipping tutorial site"
         fi
 
     - name: Verify JupyterLite output

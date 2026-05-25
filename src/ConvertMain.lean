@@ -45,6 +45,12 @@ structure Opts where
   site    : Option String := none
   /-- Site-mode title (defaults to "Tutorial"). -/
   title   : String := "Tutorial"
+  /-- Optional base URL for an "Open in JupyterLite" link on each
+      chapter page.  When set (e.g.
+      `--jupyterlite-base ../../lab/index.html`), each chapter
+      page gets a button that points to
+      `<base>?path=ChXX.ipynb`. -/
+  jliteBase : Option String := none
   /-- --eval mode: run the chapter through `lean --run` to bake
       `Display.*` / stdout outputs into the Markdown source. -/
   eval    : Bool := false
@@ -63,6 +69,10 @@ private def usage : String :=
   "                defaults to derived name; '-' = stdout\n" ++
   "  --site DIR    build a static HTML site from every Ch*.{md,ipynb}\n" ++
   "  --title TXT   site index title (site mode only)\n" ++
+  "  --jupyterlite-base URL\n" ++
+  "                site mode: add a button on each chapter page that\n" ++
+  "                opens the matching .ipynb in JupyterLite at URL\n" ++
+  "                (e.g. ../lab/index.html)\n" ++
   "  --eval        run the chapter through `lean --run` to bake\n" ++
   "                Display.* and stdout outputs into the .md as\n" ++
   "                ```output:* fences (requires `lean` on PATH and\n" ++
@@ -94,6 +104,9 @@ private def parseArgs (argv : List String) : Except String Opts := do
       rest := tail
     | "--eval" :: tail =>
       opts := { opts with eval := true }
+      rest := tail
+    | "--jupyterlite-base" :: v :: tail =>
+      opts := { opts with jliteBase := some v }
       rest := tail
     | "--help" :: _ | "-h" :: _ =>
       throw usage
@@ -229,6 +242,11 @@ private def runSite (opts : Opts) : IO UInt32 := do
     chapters.map fun (f, t, _) => (f, t)
 
   -- Second pass: write each chapter with prev/next nav + sidebar.
+  -- If --jupyterlite-base is set, derive a per-chapter URL of the
+  -- form `<base>?path=ChXX.ipynb`. The ipynb stem is the chapter
+  -- file's stem (Ch00_Setup.html → Ch00_Setup.ipynb).
+  let stemOfHtml (s : String) : String :=
+    if s.endsWith ".html" then (s.dropEnd 5).toString else s
   let n := chapters.size
   for i in [:n] do
     let (fname, title, cells) := chapters[i]!
@@ -241,11 +259,16 @@ private def runSite (opts : Opts) : IO UInt32 := do
                    some (nf, nt)
                  else none
     let sidebar := Convert.renderSidebar opts.title toc (some fname)
+    let jliteUrl? : Option String :=
+      opts.jliteBase.map fun base =>
+        let sep := if base.contains '?' then "&" else "?"
+        s!"{base}{sep}path={stemOfHtml fname}.ipynb"
     let html := Convert.cellsToHtml cells
                   (title := some title)
                   (prev? := prev?) (next? := next?)
                   (relRoot := "./")
                   (sidebar := sidebar)
+                  (jupyterliteUrl? := jliteUrl?)
     IO.FS.writeFile (outputPath / fname) html
     IO.println s!"wrote {outputDir}/{fname}  ({title})"
 
