@@ -25,12 +25,12 @@ chapter without firing up a kernel.
 - **Ch02 — [Pattern matching and inductive types](Ch02_Match.md)** — `match`, `if let`, `Option`, custom enums
 - **Ch03 — [Structures and type classes](Ch03_Structures.md)** — records, `Add` / `ToString` instances
 
-### Part II — Data structures *(coming soon)*
-- Ch04 — Lists
-- Ch05 — Arrays
-- Ch06 — Strings (UTF-8, iterators)
-- Ch07 — `Std.HashMap` / `HashSet` / `TreeMap`
-- Ch08 — `Option` and `Except` for error handling
+### Part II — Data structures
+- **Ch04 — [Lists](Ch04_List.md)** — `[]`, `::`, `map` / `filter` / `foldl`, `zipWith`, `range`
+- **Ch05 — [Arrays](Ch05_Array.md)** — `#[...]`, indexing, `push` / `pop`, persistent semantics, `Id.run do`
+- **Ch06 — [Strings](Ch06_String.md)** — UTF-8, `s!"..."` interpolation, iterators, padding, `toUTF8`
+- **Ch07 — [`HashMap` / `HashSet` / `TreeMap`](Ch07_HashMap.md)** — keyed containers, counters, dedup
+- **Ch08 — [`Option` / `Except`](Ch08_Errors.md)** — error handling without exceptions, `do` notation, `<|>`
 
 ### Part III — I/O and effects *(coming soon)*
 - Ch09 — The `IO` monad and `do` notation
