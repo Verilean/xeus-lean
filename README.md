@@ -7,9 +7,16 @@ Runs both as a **native desktop kernel** and as a **WASM kernel in the browser**
 
 - **Interactive Lean 4** in Jupyter notebooks — `#eval`, `#check`, `def`, `theorem`, etc.
 - **Environment persistence** — definitions carry across cells
+- **Rich display** — `Display.html`, `Display.latex`, `Display.svg`, `Display.markdown`, `Display.bv`, `Display.verilog`, `Display.waveform`, `Display.blockDiagram`, `Display.mermaid` etc. produce inline MIME output in cells
+- **Notebook helpers** — `#help_x` (registered-command list), `#findDecl` / `#listNs` / `#sig` (env search), `#bash`, `#mermaid`, `#savefig`
 - **Two build targets**:
   - **Native**: Lean-owned main loop, C++ xeus via FFI, runs in Jupyter Lab/Notebook
   - **WASM**: Compiled to WebAssembly via emscripten Memory64, runs in JupyterLite (browser, no server needed)
+- **Docs pipeline** ([`docs/Convert.md`](docs/Convert.md)) — `xlean-convert` turns one Markdown source into:
+  - `.ipynb` for Jupyter / JupyterLite,
+  - `.lean:percent` for `lake build` typechecking,
+  - a static HTML chapter or multi-chapter site (tintin-style sidebar),
+  - the same Markdown with evaluation results baked in as ` ```output:* ` fences (`--eval` runs the cells through `lean` and captures `#eval` / `Display.*` output)
 
 ## Quick Start
 
@@ -23,6 +30,7 @@ and copy-pasteable.
 | [Docker — native kernel](docs/tutorials/docker-native.md) | 10 min | Build the base image locally |
 | [Docker — WASM build](docs/tutorials/docker-wasm.md) | 30 min | Reproduce the JupyterLite static site, customize bundled libs |
 | [From source — native](docs/tutorials/native-from-source.md) | 30 min | Hack on the kernel itself |
+| [Authoring docs](docs/Convert.md) | 5 min | Use `xlean-convert` to publish a Markdown-sourced tutorial site |
 
 ### Building on top of the base image
 
