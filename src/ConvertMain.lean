@@ -45,6 +45,9 @@ structure Opts where
   site    : Option String := none
   /-- Site-mode title (defaults to "Tutorial"). -/
   title   : String := "Tutorial"
+  /-- --eval mode: run the chapter through `lean --run` to bake
+      `Display.*` / stdout outputs into the Markdown source. -/
+  eval    : Bool := false
   target  : Target := .ipynb
   input   : String := "-"
   output  : Option String := none
@@ -53,17 +56,18 @@ instance : Inhabited Opts := ⟨{}⟩
 
 private def usage : String :=
   "usage: xlean-convert --to {ipynb|lean|html|md} [-o OUTPUT] INPUT\n" ++
-  "       xlean-convert --site DIR [-o OUTDIR] [--title TITLE]\n\n" ++
+  "       xlean-convert --site DIR [-o OUTDIR] [--title TITLE]\n" ++
+  "       xlean-convert --eval INPUT.md [-o OUTPUT.md]\n\n" ++
   "  --to TARGET   ipynb (default), lean (.lean:percent), html, or md\n" ++
   "  -o OUTPUT     output file (or directory for --site)\n" ++
   "                defaults to derived name; '-' = stdout\n" ++
   "  --site DIR    build a static HTML site from every Ch*.{md,ipynb}\n" ++
   "  --title TXT   site index title (site mode only)\n" ++
-  "  INPUT         input .md or .ipynb file; '-' = stdin (md)\n" ++
-  "                (When INPUT is .ipynb the source is parsed as a\n" ++
-  "                Jupyter notebook; otherwise as Markdown.  This\n" ++
-  "                lets `--to md` bake the cell outputs of an\n" ++
-  "                already-evaluated notebook into a Markdown file.)\n"
+  "  --eval        run the chapter through `lean --run` to bake\n" ++
+  "                Display.* and stdout outputs into the .md as\n" ++
+  "                ```output:* fences (requires `lean` on PATH and\n" ++
+  "                `Display` reachable via LEAN_PATH)\n" ++
+  "  INPUT         input .md or .ipynb file; '-' = stdin (md)\n"
 
 private def parseArgs (argv : List String) : Except String Opts := do
   let mut opts : Opts := {}
@@ -87,6 +91,9 @@ private def parseArgs (argv : List String) : Except String Opts := do
       rest := tail
     | "--title" :: v :: tail =>
       opts := { opts with title := v }
+      rest := tail
+    | "--eval" :: tail =>
+      opts := { opts with eval := true }
       rest := tail
     | "--help" :: _ | "-h" :: _ =>
       throw usage
@@ -253,10 +260,60 @@ private def runSite (opts : Opts) : IO UInt32 := do
 
   return 0
 
+/-- --eval mode: render the cells as a .lean batch, run it via
+    `lean --run`, parse the stdout back into per-cell outputs, and
+    serialise the augmented cell list as Markdown.
+
+    The temp .lean file is dumped under `/tmp/xlean-eval-<pid>/`.
+    We pass `LEAN_PATH` from the environment through to the child
+    so it can find Display etc. -/
+private def runEval (opts : Opts) : IO UInt32 := do
+  let cells ← loadCells opts.input
+  let leanSrc := Convert.renderForEval cells
+  -- Write to a temp file (lean --run needs a path, not stdin).
+  let tmpDir : System.FilePath :=
+    System.FilePath.mk "/tmp" / s!"xlean-eval-{← IO.rand 100000 999999}"
+  IO.FS.createDirAll tmpDir
+  let tmpFile := tmpDir / "Eval.lean"
+  IO.FS.writeFile tmpFile leanSrc
+
+  -- `lean FILE` evaluates the file top-to-bottom (executing #eval
+  -- as it goes) and exits cleanly without needing a `main`.
+  IO.eprintln s!"running: lean {tmpFile}"
+  let proc ← IO.Process.spawn {
+    cmd := "lean",
+    args := #[tmpFile.toString],
+    stdout := .piped,
+    stderr := .piped,
+  }
+  let stdout ← proc.stdout.readToEnd
+  let stderr ← proc.stderr.readToEnd
+  let ec ← proc.wait
+  if ec != 0 then
+    IO.eprintln s!"lean --run failed (exit {ec})"
+    IO.eprintln stderr
+    -- Still try to attach whatever outputs we got, so the user
+    -- can see partial progress, but exit non-zero.
+    pure ()
+
+  let chunks := Convert.splitByCellEnd stdout
+  let newCells := Convert.attachEvalOutputs cells chunks
+  let md := Convert.cellsToMarkdown newCells
+  let outPath :=
+    match opts.output with
+    | some p => p
+    | none =>
+      if opts.input == "-" then "-"
+      else deriveOutputName opts.input .md
+  writeOutput outPath md
+  return (if ec != 0 then 1 else 0)
+
 unsafe def main (argv : List String) : IO UInt32 := do
   let opts ← match parseArgs argv with
     | .ok o => pure o
     | .error e => do
       IO.eprintln e
       return 2
-  if opts.site.isSome then runSite opts else runSingle opts
+  if opts.site.isSome then runSite opts
+  else if opts.eval then runEval opts
+  else runSingle opts

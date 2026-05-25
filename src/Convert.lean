@@ -1056,4 +1056,153 @@ def cellsToMarkdown (cells : Array Cell) : String :=
       let prev := if acc.endsWith "\n" then acc else acc ++ "\n"
       prev ++ "\n" ++ s
 
+/-! ## 8. Cells → Lean source for batch evaluation
+
+The "eval" pipeline:
+  1. `renderForEval`  : cells → one .lean file with cell delimiters
+  2. (caller runs `lean --run` on the file, captures stdout)
+  3. `parseEvalOutput`: stdout → updated cells with outputs attached
+
+The delimiter convention is a line like
+    ===XLEAN-CELL-END n===
+emitted after every code cell.  Everything between two delimiters
+(or between the start of stdout and the first delimiter) belongs
+to cell n.  Inside a cell's text we then look for Display's MIME
+markers (\x1bMIME:<type>\x1e<body>\x1b/MIME\x1e); whatever is
+outside markers becomes a plain stream output.
+-/
+
+/-- Cell-end marker prefix (followed by index, then `===\n`). -/
+private def cellEndPrefix : String := "===XLEAN-CELL-END "
+
+/-- Render the cell sequence as a single .lean file that, when
+    run with `lean --run`, prints each code cell's plain stdout
+    followed by a delimiter so we can split the stream back into
+    per-cell outputs.
+
+    Caller must ensure that `Display` is available on the LEAN_PATH;
+    a typical setup script imports the necessary modules at the top
+    of `header` (a verbatim prelude). -/
+def renderForEval (cells : Array Cell) (header : String := "import Display\n\n") : String := Id.run do
+  let mut out := header
+  let mut idx := 0
+  for c in cells do
+    match c with
+    | .markdown _ => pure ()  -- markdown cells produce no output
+    | .code ls _ =>
+      -- Inline the cell body verbatim.
+      for l in ls do
+        out := out ++ l ++ "\n"
+      -- Then a delimiter `#eval` that flushes the Display buffer
+      -- and prints the end marker.
+      out := out ++ s!"#eval show IO Unit from do\n"
+                 ++ s!"  let mimes ← Display.drain\n"
+                 ++ s!"  IO.print mimes\n"
+                 ++ s!"  IO.println \"{cellEndPrefix}{idx}===\"\n"
+      idx := idx + 1
+  pure out
+
+/-- Strip ANSI MIME markers from `text`, returning the leftover
+    plain text plus an array of `(mime, body)` pairs.  Same wire
+    format as Display.emit / xeus_ffi.cpp:extract_mime_payloads.
+
+    Works on `List Char` rather than String.Pos to avoid String.Pos
+    arithmetic quirks; the documents we feed in are at most a few
+    MB so this is fine. -/
+private def extractMimePayloads (text : String) : String × Array (String × String) := Id.run do
+  let esc := Char.ofNat 0x1B
+  let rs  := Char.ofNat 0x1E
+  let mut plain : String := ""
+  let mut bundles : Array (String × String) := #[]
+  let mut cs := text.toList
+  while !cs.isEmpty do
+    match cs with
+    | c :: rest =>
+      if c == esc then
+        -- Try to match `\x1bMIME:<type>\x1e<body>\x1b/MIME\x1e`.
+        match rest with
+        | 'M' :: 'I' :: 'M' :: 'E' :: ':' :: after =>
+          let (mimeChars, afterMime) := after.span (· ≠ rs)
+          match afterMime with
+          | _rs :: bodyChars =>
+            -- Find the closing `\x1b/MIME\x1e`.
+            let closing := [esc, '/', 'M', 'I', 'M', 'E', rs]
+            let rec splitAt (acc : List Char) (xs : List Char) : Option (List Char × List Char) :=
+              if closing.isPrefixOf xs then some (acc.reverse, xs.drop closing.length)
+              else
+                match xs with
+                | [] => none
+                | y :: ys => splitAt (y :: acc) ys
+            match splitAt [] bodyChars with
+            | some (body, tail) =>
+              bundles := bundles.push (String.mk mimeChars, String.mk body)
+              cs := tail
+            | none =>
+              plain := plain.push c
+              cs := rest
+          | _ =>
+            plain := plain.push c
+            cs := rest
+        | _ =>
+          plain := plain.push c
+          cs := rest
+      else
+        plain := plain.push c
+        cs := rest
+    | [] => cs := []
+  pure (plain, bundles)
+termination_by text.length
+
+/-- Trim a single trailing `\n` from a string. -/
+private def chomp (s : String) : String :=
+  if s.endsWith "\n" then s.dropEnd 1 |>.toString else s
+
+/-- Split lines into per-cell chunks using the `cellEndPrefix N`
+    delimiter.  Returns `chunks[n] = stdout text emitted by cell n`
+    (no trailing newline; the delimiter line itself is dropped). -/
+def splitByCellEnd (stdout : String) : Array String := Id.run do
+  let mut chunks : Array String := #[]
+  let mut buf : String := ""
+  for raw in stdout.splitOn "\n" do
+    if raw.startsWith cellEndPrefix && raw.endsWith "===" then
+      chunks := chunks.push buf
+      buf := ""
+    else
+      buf := if buf.isEmpty then raw else buf ++ "\n" ++ raw
+  -- Anything after the last delimiter is dropped (no cell to own it).
+  pure chunks
+
+/-- Attach evaluated stdout to the corresponding code cells.
+
+    Walks `cells` left-to-right; each code cell consumes the next
+    chunk in `chunks` and gets its outputs replaced.  Markdown cells
+    pass through unchanged.
+
+    If `chunks` is shorter than the number of code cells (e.g. an
+    earlier cell errored and aborted execution), later cells keep
+    their existing outputs.  If longer, extra chunks are dropped. -/
+def attachEvalOutputs (cells : Array Cell) (chunks : Array String) : Array Cell := Id.run do
+  let mut out : Array Cell := Array.mkEmpty cells.size
+  let mut chunkIdx := 0
+  for c in cells do
+    match c with
+    | .markdown _ => out := out.push c
+    | .code src _ =>
+      if h : chunkIdx < chunks.size then
+        let chunk := chunks[chunkIdx]
+        let (plain, bundles) := extractMimePayloads chunk
+        let plain := chomp plain
+        let mut newOuts : Array CellOutput := #[]
+        if !plain.isEmpty then
+          newOuts := newOuts.push
+            { mime := "", lines := (plain.splitOn "\n").toArray }
+        for (mime, body) in bundles do
+          newOuts := newOuts.push
+            { mime := mime, lines := (chomp body).splitOn "\n" |>.toArray }
+        out := out.push (.code src newOuts)
+        chunkIdx := chunkIdx + 1
+      else
+        out := out.push c
+  pure out
+
 end Convert
