@@ -68,27 +68,51 @@ namespace Convert
 
 /-! ## 1. Cell representation -/
 
-/-- One cell of the parsed document. -/
+/-- A single output attached to a code cell.
+
+    `mime` is the empty string for plain stream output (stdout);
+    otherwise a Jupyter MIME type like "text/html", "text/latex",
+    "image/svg+xml", "text/markdown", or "text/plain" with an
+    associated `language` hint (e.g. "verilog") so syntax
+    highlighting can still kick in for plain-text outputs of a
+    known language. -/
+structure CellOutput where
+  /-- MIME type (e.g. "text/html"); "" for plain stream output. -/
+  mime     : String := ""
+  /-- Highlight.js language tag (used for plain-text outputs of a
+      known language: "verilog", "json", etc.).  Ignored when
+      `mime` is non-empty and non-"text/plain". -/
+  language : String := ""
+  /-- Raw output body, line-split (no trailing newlines). -/
+  lines    : Array String
+  deriving Repr, Inhabited
+
+/-- One cell of the parsed document.
+
+    Code cells carry their evaluated outputs alongside the source.
+    This is the same model Jupyter uses internally, and it lets a
+    single `.md` (with ` ```output:* ` fences) round-trip cleanly
+    to `.ipynb` and back.  Markdown cells carry no outputs. -/
 inductive Cell where
   | markdown (lines : Array String)
-  | code     (lines : Array String)
+  | code     (lines : Array String) (outputs : Array CellOutput := #[])
   deriving Repr, Inhabited
 
 namespace Cell
 
 def isMarkdown : Cell → Bool
   | .markdown _ => true
-  | .code     _ => false
+  | .code _ _   => false
 
 def isCode : Cell → Bool
-  | .code _ => true
-  | _       => false
+  | .code _ _ => true
+  | _         => false
 
 /-- Source of a cell as a single string (Jupyter expects an array
     of lines, each ending in `\n`, or a single string).  We keep
     them as arrays-of-lines and join when serialising. -/
 def lines : Cell → Array String
-  | .markdown ls | .code ls => ls
+  | .markdown ls | .code ls _ => ls
 
 end Cell
 
@@ -125,29 +149,70 @@ private def trimTrailingEmpty (buf : Array String) : Array String := Id.run do
     b := b.pop
   pure b
 
+/-- Decode an `output[:MIME]` fence tag.
+
+    Returns `(mime, language)` where both fields follow the
+    `CellOutput` convention:
+      * `output`                → ("", "")            stream / stdout
+      * `output:html`           → ("text/html", "")
+      * `output:svg`            → ("image/svg+xml", "")
+      * `output:latex`          → ("text/latex", "")
+      * `output:markdown` / `:md` → ("text/markdown", "")
+      * `output:json`           → ("application/json", "")
+      * `output:LANG` (verilog, c++, ...) → ("text/plain", LANG)
+    Returns `none` if the tag is not an `output[:...]` form. -/
+private def parseOutputTag (tag : String) : Option (String × String) :=
+  let lower := tag.toLower
+  if lower == "output" then some ("", "")
+  else if lower.startsWith "output:" then
+    let sub := (lower.drop 7).toString
+    match sub with
+    | "html"     => some ("text/html", "")
+    | "svg"      => some ("image/svg+xml", "")
+    | "latex"    => some ("text/latex", "")
+    | "markdown" => some ("text/markdown", "")
+    | "md"       => some ("text/markdown", "")
+    | "json"     => some ("application/json", "")
+    | "plain"    => some ("text/plain", "")
+    | "text"     => some ("", "")
+    | lang       => some ("text/plain", lang)
+  else none
+
 /-- Parse Markdown source into a sequence of cells. -/
 def parseMarkdown (src : String) : Array Cell := Id.run do
   let lines := src.splitOn "\n" |>.map stripCR |>.toArray
-  let mut cells   : Array Cell := #[]
-  let mut mdBuf   : Array String := #[]
-  let mut codeBuf : Array String := #[]
+  let mut cells    : Array Cell := #[]
+  let mut mdBuf    : Array String := #[]
+  let mut codeBuf  : Array String := #[]
+  let mut outBuf   : Array String := #[]
+  let mut outs     : Array CellOutput := #[]
+  let mut curOutMime : String := ""
+  let mut curOutLang : String := ""
   let mut inLeanFence := false
+  let mut inOutputFence := false
   let mut inOtherFence := false
+  let mut pendingCode := false   -- a Lean code cell is open and we
+                                 -- might still attach more outputs
   let flushMd : Array String → Array Cell → Array Cell := fun buf c =>
     let trimmed := trimTrailingEmpty buf
     if trimmed.isEmpty || trimmed.all String.isEmpty then c
     else c.push (.markdown trimmed)
-  let flushCode : Array String → Array Cell → Array Cell := fun buf c =>
-    if buf.isEmpty then c else c.push (.code buf)
   for raw in lines do
     if inLeanFence then
       match classify raw with
       | .closeFence | .openFence _ =>
-        cells   := flushCode codeBuf cells
-        codeBuf := #[]
         inLeanFence := false
+        pendingCode := true  -- defer pushing until we know if there are outputs
       | .plain line =>
         codeBuf := codeBuf.push line
+    else if inOutputFence then
+      match classify raw with
+      | .closeFence | .openFence _ =>
+        outs := outs.push { mime := curOutMime, language := curOutLang, lines := outBuf }
+        outBuf := #[]
+        inOutputFence := false
+      | .plain line =>
+        outBuf := outBuf.push line
     else if inOtherFence then
       mdBuf := mdBuf.push raw
       match classify raw with
@@ -156,17 +221,51 @@ def parseMarkdown (src : String) : Array Cell := Id.run do
     else
       match classify raw with
       | .openFence tag =>
-        if tag.toLower == "lean" then
-          cells := flushMd mdBuf cells
-          mdBuf := #[]
+        let tagLower := tag.toLower
+        if tagLower == "lean" then
+          -- Starting a new lean cell: finalise any pending one.
+          if pendingCode then
+            cells := flushMd mdBuf cells; mdBuf := #[]
+            cells := cells.push (.code codeBuf outs)
+            codeBuf := #[]; outs := #[]; pendingCode := false
+          else
+            cells := flushMd mdBuf cells; mdBuf := #[]
           inLeanFence := true
         else
-          mdBuf := mdBuf.push raw
-          inOtherFence := true
+          match parseOutputTag tag with
+          | some (mime, lang) =>
+            if pendingCode then
+              -- Attach this output to the still-open code cell.
+              curOutMime := mime; curOutLang := lang; inOutputFence := true
+            else
+              -- Stray output fence with no preceding lean cell:
+              -- treat as illustrative inside the surrounding
+              -- markdown (same fallback as ```bash etc.).
+              mdBuf := mdBuf.push raw
+              inOtherFence := true
+          | none =>
+            -- If we had a pending code cell waiting for outputs,
+            -- this non-output fence closes it.
+            if pendingCode then
+              cells := flushMd mdBuf cells; mdBuf := #[]
+              cells := cells.push (.code codeBuf outs)
+              codeBuf := #[]; outs := #[]; pendingCode := false
+            mdBuf := mdBuf.push raw
+            inOtherFence := true
       | _ =>
+        -- Non-fence line.  A blank line after a code cell is
+        -- allowed before its outputs; otherwise close the code.
+        if pendingCode && !raw.trimAscii.toString.isEmpty then
+          cells := flushMd mdBuf cells; mdBuf := #[]
+          cells := cells.push (.code codeBuf outs)
+          codeBuf := #[]; outs := #[]; pendingCode := false
         mdBuf := mdBuf.push raw
+  -- Flush at EOF.
+  if pendingCode then
+    cells := flushMd mdBuf cells; mdBuf := #[]
+    cells := cells.push (.code codeBuf outs)
+    codeBuf := #[]; outs := #[]
   cells := flushMd mdBuf cells
-  cells := flushCode codeBuf cells
   pure cells
 
 /-! ## 3. Cells → Jupyter `.ipynb` JSON -/
@@ -193,6 +292,32 @@ private def linesToSource (ls : Array String) : Array String := Id.run do
       out := out.push (line ++ "\n")
   pure out
 
+/-- Serialise one CellOutput as a Jupyter cell output value.
+
+    Empty mime → `stream` output.
+    `text/plain` with a language hint → still `display_data` with
+    a `text/plain` payload (the language hint travels in
+    `metadata.xleanLanguage` so reverse conversion can recover the
+    fence tag). -/
+private def outputToJson (o : CellOutput) : Json :=
+  let body := linesToSource o.lines
+  if o.mime.isEmpty then
+    Json.mkObj [
+      ("output_type", "stream"),
+      ("name",        "stdout"),
+      ("text",        Json.arr (body.map Json.str))
+    ]
+  else
+    let dataLines := Json.arr (body.map Json.str)
+    let metaJson :=
+      if o.language.isEmpty then Json.mkObj []
+      else Json.mkObj [("xleanLanguage", Json.str o.language)]
+    Json.mkObj [
+      ("output_type", "display_data"),
+      ("data",        Json.mkObj [(o.mime, dataLines)]),
+      ("metadata",    metaJson)
+    ]
+
 private def cellToJson : Cell → Json
   | .markdown ls =>
     Json.mkObj [
@@ -200,12 +325,12 @@ private def cellToJson : Cell → Json
       ("metadata",  Json.mkObj []),
       ("source",    Json.arr ((linesToSource ls).map Json.str))
     ]
-  | .code ls =>
+  | .code ls outs =>
     Json.mkObj [
       ("cell_type",       "code"),
       ("execution_count", Json.null),
       ("metadata",        Json.mkObj []),
-      ("outputs",         Json.arr #[]),
+      ("outputs",         Json.arr (outs.map outputToJson)),
       ("source",          Json.arr ((linesToSource ls).map Json.str))
     ]
 
@@ -236,13 +361,17 @@ def cellsToIpynb (cells : Array Cell) : Json :=
 
 /-! ## 4. Cells → `lean:percent` source -/
 
-/-- Render a single cell in jupytext percent format. -/
+/-- Render a single cell in jupytext percent format.
+
+    Outputs are *dropped* in the .lean:percent output — that
+    format is for `lake build` typechecking, not display.  Use
+    `--to md` if you want a round-trippable source-with-outputs. -/
 private def cellToPercent : Cell → String
   | .markdown ls =>
     let body := ls.foldl (fun acc l =>
       if l.isEmpty then acc ++ "--\n" else acc ++ "-- " ++ l ++ "\n") ""
     "-- %% [markdown]\n" ++ body
-  | .code ls =>
+  | .code ls _ =>
     let body := ls.foldl (fun acc l => acc ++ l ++ "\n") ""
     "-- %%\n" ++ body
 
@@ -421,33 +550,102 @@ private def renderMarkdownBlock (lines : Array String) : String := Id.run do
         out := out ++ renderInline item ++ "<br>\n"
         i := i + 1
       out := out ++ "</blockquote>\n"
+    else if trimmed.startsWith "|" && i + 1 < n
+            && lines[i+1]!.trimAsciiStart.toString.startsWith "|"
+            && (lines[i+1]!.trimAsciiStart.toString.contains '-') then
+      -- GitHub-flavoured Markdown table:
+      --   | h1 | h2 |
+      --   |----|----|
+      --   | a  | b  |
+      -- Second row is the separator (cells of dashes / colons).
+      let splitRow (s : String) : Array String :=
+        let t := s.trimAsciiStart.toString
+        let t := if t.startsWith "|" then (t.drop 1).toString else t
+        let t := if t.endsWith "|" then (t.dropEnd 1).toString else t
+        (t.splitOn "|").toArray.map fun c => c.trimAscii.toString
+      out := out ++ "<table>\n<thead><tr>"
+      for h in splitRow lines[i]! do
+        out := out ++ "<th>" ++ renderInline h ++ "</th>"
+      out := out ++ "</tr></thead>\n"
+      i := i + 2  -- skip header + separator
+      out := out ++ "<tbody>\n"
+      while i < n && lines[i]!.trimAsciiStart.toString.startsWith "|" do
+        out := out ++ "  <tr>"
+        for c in splitRow lines[i]! do
+          out := out ++ "<td>" ++ renderInline c ++ "</td>"
+        out := out ++ "</tr>\n"
+        i := i + 1
+      out := out ++ "</tbody></table>\n"
     else if trimmed.startsWith "<" then
-      -- Raw HTML: pass through untouched (covers tables/images
+      -- Raw HTML: pass through untouched (covers images
       -- written inline).
       out := out ++ line ++ "\n"
       i := i + 1
     else
       -- Paragraph: gather consecutive non-blank lines.
       let mut para := ""
-      while i < n && !lines[i]!.isEmpty && !lines[i]!.trimAsciiStart.toString.startsWith "#"
+      while i < n && !lines[i]!.isEmpty
+            && !lines[i]!.trimAsciiStart.toString.startsWith "#"
             && !lines[i]!.trimAsciiStart.toString.startsWith "```"
             && !lines[i]!.trimAsciiStart.toString.startsWith "- "
             && !lines[i]!.trimAsciiStart.toString.startsWith "* "
-            && !lines[i]!.trimAsciiStart.toString.startsWith "> " do
+            && !lines[i]!.trimAsciiStart.toString.startsWith "> "
+            && !lines[i]!.trimAsciiStart.toString.startsWith "|" do
         let sep := if para.isEmpty then "" else " "
         para := para ++ sep ++ lines[i]!
         i := i + 1
       out := out ++ "<p>" ++ renderInline para ++ "</p>\n"
   pure out
 
+/-- Render a single CellOutput to HTML.
+
+    Rendering depends on the MIME type:
+      * ""              → `<pre class="output">PLAIN</pre>`
+      * text/plain+lang → `<pre class="output"><code class="language-LANG">…`
+      * text/html       → raw HTML in `<div class="output">…</div>`
+      * image/svg+xml   → raw SVG in `<div class="output">…</div>`
+      * text/latex      → `<div class="output">$…$</div>` (MathJax)
+      * text/markdown   → recursively rendered as a markdown block
+      * application/json → `<pre class="output"><code class="language-json">…` -/
+private def outputToHtml (o : CellOutput) : String :=
+  let body := o.lines.foldl (init := "") fun acc l => acc ++ l ++ "\n"
+  match o.mime with
+  | "" =>
+    "<pre class=\"output\">" ++ escHtml body ++ "</pre>\n"
+  | "text/plain" =>
+    let cls := if o.language.isEmpty then ""
+               else " class=\"language-" ++ escHtml o.language ++ "\""
+    "<pre class=\"output\"><code" ++ cls ++ ">" ++ escHtml body ++ "</code></pre>\n"
+  | "application/json" =>
+    "<pre class=\"output\"><code class=\"language-json\">"
+      ++ escHtml body ++ "</code></pre>\n"
+  | "text/html" =>
+    "<div class=\"output html\">\n" ++ body ++ "\n</div>\n"
+  | "image/svg+xml" =>
+    "<div class=\"output svg\">\n" ++ body ++ "\n</div>\n"
+  | "text/latex" =>
+    -- Pass through verbatim; MathJax (if loaded) renders the
+    -- `$...$` / `\(...\)` markers.
+    "<div class=\"output latex\">\n" ++ body ++ "\n</div>\n"
+  | "text/markdown" =>
+    "<div class=\"output md\">\n"
+      ++ renderMarkdownBlock o.lines ++ "</div>\n"
+  | other =>
+    -- Unknown mime: show as escaped text with the mime as label.
+    "<pre class=\"output\" data-mime=\"" ++ escHtml other ++ "\">"
+      ++ escHtml body ++ "</pre>\n"
+
 /-- Render a single cell to the body HTML used inside a chapter
     page.  Code cells use a `language-lean` class so highlight.js
-    can colour them if the page loads it. -/
+    can colour them if the page loads it; their outputs are
+    rendered below in `<div class="output …">` containers. -/
 private def cellToHtml : Cell → String
   | .markdown ls => renderMarkdownBlock ls
-  | .code ls =>
+  | .code ls outs =>
     let body := ls.foldl (fun acc l => acc ++ escHtml l ++ "\n") ""
-    "<pre><code class=\"language-lean\">" ++ body ++ "</code></pre>\n"
+    let codeHtml := "<pre><code class=\"language-lean\">" ++ body ++ "</code></pre>\n"
+    let outHtml := outs.foldl (init := "") fun acc o => acc ++ outputToHtml o
+    codeHtml ++ outHtml
 
 /-- Extract the first H1 in a cells list, for use as the chapter
     title.  Falls back to the first non-empty line of the first
@@ -465,9 +663,49 @@ def chapterTitle (cells : Array Cell) : String := Id.run do
     | _ => pure ()
   pure "Untitled"
 
+/-- Strip the "Chapter N — " prefix from a chapter title so the
+    sidebar / nav can show just the short subtitle.  Returns
+    `(numberPart, shortTitle)` where `numberPart` is "0" / "1b"
+    etc. when present, "" otherwise, and `shortTitle` is the rest.
+
+    Recognised prefixes (case-insensitive on "chapter"):
+      "Chapter 0 — Setup"            → ("0",  "Setup")
+      "Chapter 1b — Your First …"    → ("1b", "Your First …")
+      "Plain title with no chapter"  → ("",   "Plain title with no chapter")
+    Em-dash and ASCII dash both accepted; any spaces around the
+    dash are eaten. -/
+def stripChapterPrefix (title : String) : String × String := Id.run do
+  let t := title.trimAscii.toString
+  let lower := t.toLower
+  if !lower.startsWith "chapter " then return ("", t)
+  let rest := (t.drop 8).trimAsciiStart.toString  -- after "Chapter "
+  -- Take the number/identifier (digits + optional letter suffix).
+  let cs := rest.toList
+  let isNumLike (c : Char) := c.isDigit || c.isAlpha
+  let (numChars, after) := cs.span isNumLike
+  if numChars.isEmpty then return ("", t)
+  let numPart := String.ofList numChars
+  -- Eat whitespace, then a dash (— or --- or -), then whitespace.
+  let afterTrimmed := (String.ofList after).trimAsciiStart.toString
+  let body : String :=
+    if afterTrimmed.startsWith "—" then
+      (afterTrimmed.drop 1).trimAsciiStart.toString
+    else if afterTrimmed.startsWith "–" then
+      (afterTrimmed.drop 1).trimAsciiStart.toString
+    else if afterTrimmed.startsWith "-" then
+      (afterTrimmed.drop 1).trimAsciiStart.toString
+    else
+      -- No dash: the title was something like "Chapter 0" with
+      -- nothing after.  Keep it as-is so we still show *something*.
+      afterTrimmed
+  if body.isEmpty then return ("", t)
+  pure (numPart, body)
+
 /-- HTML preamble shared by every chapter page.  Loads highlight.js
-    from a CDN for Lean syntax colouring; pages still render fine
-    if the CDN is unreachable. -/
+    plus the third-party `highlightjs-lean` language definition so
+    `<pre><code class="language-lean">` blocks pick up real Lean
+    keywords (def, fun, match, etc.).  Pages still render fine if
+    the CDNs are unreachable — they just appear monochrome. -/
 private def htmlHead (title : String) (relRoot : String) : String :=
   "<!doctype html>\n" ++
   "<html lang=\"en\"><head>\n" ++
@@ -477,20 +715,85 @@ private def htmlHead (title : String) (relRoot : String) : String :=
   "<link rel=\"stylesheet\" href=\"" ++ relRoot ++ "style.css\">\n" ++
   "<link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github.min.css\">\n" ++
   "<script src=\"https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js\"></script>\n" ++
+  -- highlightjs-lean self-registers `lean` with hljs on load, so
+  -- `<pre><code class=\"language-lean\">` blocks pick up real Lean
+  -- keywords (def, theorem, fun, match, …) instead of being
+  -- auto-detected as something else.
+  "<script src=\"https://cdn.jsdelivr.net/npm/highlightjs-lean@1.0.0/dist/lean.min.js\"></script>\n" ++
   "<script>document.addEventListener('DOMContentLoaded',function(){hljs.highlightAll();});</script>\n" ++
   "</head><body>\n"
 
 private def htmlFoot : String := "</body></html>\n"
 
-/-- Default stylesheet served alongside the chapter pages. -/
+/-- Render the sidebar nav (left column).  Highlights `current`.
+
+    Strips the "Chapter N — " prefix from each entry so the
+    sidebar reads as a compact "N. Short title" list. -/
+def renderSidebar (siteTitle : String)
+    (chapters : Array (String × String))
+    (current : Option String) : String :=
+  let items := chapters.foldl (init := "") fun acc (file, title) =>
+    let cls := if current == some file then " class=\"active\"" else ""
+    let (num, short) := stripChapterPrefix title
+    let label :=
+      if num.isEmpty then escHtml short
+      else "<span class=\"chnum\">" ++ escHtml num ++ "</span> "
+           ++ escHtml short
+    acc ++ "    <li" ++ cls ++ "><a href=\"" ++ escHtml file ++ "\">"
+        ++ label ++ "</a></li>\n"
+  "<aside class=\"sidebar\">\n" ++
+  "  <a class=\"site-title\" href=\"index.html\">" ++ escHtml siteTitle ++ "</a>\n" ++
+  "  <ul class=\"toc\">\n" ++ items ++ "  </ul>\n" ++
+  "</aside>\n"
+
+/-- Default stylesheet served alongside the chapter pages.  Two-
+    column layout: fixed sidebar on the left, scrollable main
+    column on the right.  Collapses to a stacked single-column
+    layout under 800px. -/
 def defaultStylesheet : String :=
   ":root { color-scheme: light dark; }\n" ++
-  "body { font-family: -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif;\n" ++
-  "       max-width: 820px; margin: 2em auto; padding: 0 1em;\n" ++
-  "       line-height: 1.55; color: #222; }\n" ++
-  "h1, h2, h3, h4 { line-height: 1.2; margin-top: 1.6em; }\n" ++
-  "h1 { border-bottom: 2px solid #2196F3; padding-bottom: 0.2em; }\n" ++
-  "h2 { border-bottom: 1px solid #ddd; padding-bottom: 0.15em; }\n" ++
+  "* { box-sizing: border-box; }\n" ++
+  "body { margin: 0;\n" ++
+  "       font-family: -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif;\n" ++
+  "       line-height: 1.55; color: #222; background: #fff; }\n" ++
+  ".layout { display: flex; min-height: 100vh; }\n" ++
+  "aside.sidebar {\n" ++
+  "  width: 280px; flex-shrink: 0; background: #0d47a1; color: #fff;\n" ++
+  "  padding: 1.5em 0; overflow-y: auto; position: sticky; top: 0;\n" ++
+  "  height: 100vh;\n" ++
+  "}\n" ++
+  "aside.sidebar .site-title {\n" ++
+  "  display: block; padding: 0 1.2em 1em; font-size: 1.1em;\n" ++
+  "  font-weight: 600; color: #fff; text-decoration: none;\n" ++
+  "  border-bottom: 1px solid rgba(255,255,255,0.15);\n" ++
+  "  margin-bottom: 0.6em;\n" ++
+  "}\n" ++
+  "aside.sidebar ul.toc { list-style: none; padding: 0; margin: 0; }\n" ++
+  "aside.sidebar ul.toc li a {\n" ++
+  "  display: block; padding: 0.55em 1.2em; color: rgba(255,255,255,0.85);\n" ++
+  "  text-decoration: none; font-size: 0.92em; border-left: 3px solid transparent;\n" ++
+  "}\n" ++
+  "aside.sidebar .chnum {\n" ++
+  "  display: inline-block; min-width: 1.7em; margin-right: 0.4em;\n" ++
+  "  color: rgba(255,255,255,0.55); font-variant-numeric: tabular-nums;\n" ++
+  "  font-size: 0.85em;\n" ++
+  "}\n" ++
+  "aside.sidebar ul.toc li a:hover {\n" ++
+  "  background: rgba(255,255,255,0.08); color: #fff;\n" ++
+  "}\n" ++
+  "aside.sidebar ul.toc li.active a {\n" ++
+  "  background: rgba(255,255,255,0.12); color: #fff;\n" ++
+  "  border-left-color: #ffca28; font-weight: 500;\n" ++
+  "}\n" ++
+  "main.content {\n" ++
+  "  flex: 1; padding: 2em 3em; max-width: 880px; min-width: 0;\n" ++
+  "}\n" ++
+  "main.content h1, main.content h2, main.content h3, main.content h4 {\n" ++
+  "  line-height: 1.2; margin-top: 1.6em;\n" ++
+  "}\n" ++
+  "main.content h1 { border-bottom: 2px solid #2196F3; padding-bottom: 0.2em;\n" ++
+  "                  margin-top: 0; }\n" ++
+  "main.content h2 { border-bottom: 1px solid #ddd; padding-bottom: 0.15em; }\n" ++
   "code { background: #f4f4f4; padding: 1px 4px; border-radius: 3px;\n" ++
   "       font-family: 'SF Mono', Menlo, Consolas, monospace; font-size: 0.92em; }\n" ++
   "pre { background: #f7f7f9; border: 1px solid #e1e1e8; border-radius: 4px;\n" ++
@@ -498,18 +801,50 @@ def defaultStylesheet : String :=
   "pre code { background: none; padding: 0; font-size: 0.9em; }\n" ++
   "blockquote { border-left: 4px solid #2196F3; margin: 1em 0; padding: 0.5em 1em;\n" ++
   "             background: #f0f7ff; color: #444; }\n" ++
-  "a { color: #1565c0; text-decoration: none; }\n" ++
-  "a:hover { text-decoration: underline; }\n" ++
+  "main.content a { color: #1565c0; text-decoration: none; }\n" ++
+  "main.content a:hover { text-decoration: underline; }\n" ++
   "nav.chapter-nav { display: flex; justify-content: space-between;\n" ++
-  "                  margin: 2em 0 1em; padding-top: 1em;\n" ++
+  "                  margin: 2.5em 0 1em; padding-top: 1em;\n" ++
   "                  border-top: 1px solid #ddd; font-size: 0.95em; }\n" ++
   "nav.chapter-nav a.toc { margin: 0 auto; }\n" ++
-  "ul.toc { list-style: none; padding-left: 0; }\n" ++
-  "ul.toc li { padding: 0.3em 0; }\n" ++
-  "ul.toc a { font-weight: 500; }\n"
+  "main.content table { border-collapse: collapse; margin: 1em 0; font-size: 0.93em; }\n" ++
+  "main.content th, main.content td { border: 1px solid #ddd; padding: 0.4em 0.8em;\n" ++
+  "                                   text-align: left; vertical-align: top; }\n" ++
+  "main.content th { background: #f3f6fa; font-weight: 600; }\n" ++
+  "main.content tr:nth-child(even) td { background: #fafbfc; }\n" ++
+  "main.content ul.toc { list-style: none; padding-left: 0; }\n" ++
+  "main.content ul.toc li { padding: 0.3em 0; }\n" ++
+  "main.content ul.toc a { font-weight: 500; }\n" ++
+  "main.content .chnum { display: inline-block; min-width: 1.8em;\n" ++
+  "                       color: #888; font-variant-numeric: tabular-nums;\n" ++
+  "                       margin-right: 0.4em; }\n" ++
+  -- Output blocks (from ```output / ```output:<mime> fences or
+  -- ipynb cell outputs).  Stand out from input code with a left
+  -- accent bar and a softer background.
+  "main.content pre.output, main.content div.output {\n" ++
+  "  background: #fafafa; border-left: 3px solid #bcbcbc;\n" ++
+  "  border-top: 0; border-right: 0; border-bottom: 0;\n" ++
+  "  border-radius: 0 4px 4px 0; padding: 0.7em 1em;\n" ++
+  "  margin: -0.3em 0 1em; font-size: 0.88em;\n" ++
+  "}\n" ++
+  "main.content pre.output { overflow-x: auto; }\n" ++
+  "main.content pre.output code { background: none; font-size: 1em; }\n" ++
+  "main.content div.output.html, main.content div.output.svg,\n" ++
+  "main.content div.output.latex, main.content div.output.md {\n" ++
+  "  font-size: 0.92em;\n" ++
+  "}\n" ++
+  "main.content div.output.svg svg { max-width: 100%; height: auto; }\n" ++
+  "@media (max-width: 800px) {\n" ++
+  "  .layout { flex-direction: column; }\n" ++
+  "  aside.sidebar { width: 100%; height: auto; position: static; padding: 1em 0; }\n" ++
+  "  main.content { padding: 1.5em 1em; }\n" ++
+  "}\n"
 
 /-- Render one chapter to a complete HTML document.
 
+    `sidebar` is the optional sidebar nav (built by the site-mode
+    driver from the full chapter list).  When omitted, the page is
+    a single-column layout suitable for standalone `--to html`.
     `prev?` / `next?` are filenames (e.g. "Ch00.html") used for
     the navigation footer; `relRoot` is the path prefix from this
     page to the site root (typically "./"). -/
@@ -517,13 +852,17 @@ def cellsToHtml (cells : Array Cell)
     (title : Option String := none)
     (prev? : Option (String × String) := none)
     (next? : Option (String × String) := none)
-    (relRoot : String := "./") : String :=
+    (relRoot : String := "./")
+    (sidebar : String := "") : String :=
   let actualTitle := title.getD (chapterTitle cells)
   let body := cells.foldl (fun acc c => acc ++ cellToHtml c) ""
-  let navLink : Option (String × String) → String → String := fun p label =>
+  let navLink : Option (String × String) → String → String := fun p arrow =>
     match p with
     | some (file, t) =>
-      "<a href=\"" ++ escHtml file ++ "\">" ++ label ++ " " ++ escHtml t ++ "</a>"
+      -- Drop the "Chapter N — " prefix; the arrow plus short
+      -- title is what readers actually scan for.
+      let (_, short) := stripChapterPrefix t
+      "<a href=\"" ++ escHtml file ++ "\">" ++ arrow ++ " " ++ escHtml short ++ "</a>"
     | none => "<span></span>"
   let nav :=
     "<nav class=\"chapter-nav\">\n" ++
@@ -531,19 +870,190 @@ def cellsToHtml (cells : Array Cell)
     "<a class=\"toc\" href=\"" ++ relRoot ++ "index.html\">Contents</a>\n" ++
     navLink next? "→" ++ "\n" ++
     "</nav>\n"
-  htmlHead actualTitle relRoot ++ body ++ nav ++ htmlFoot
+  let content := "<main class=\"content\">\n" ++ body ++ nav ++ "</main>\n"
+  let inner :=
+    if sidebar.isEmpty then content
+    else "<div class=\"layout\">\n" ++ sidebar ++ content ++ "</div>\n"
+  htmlHead actualTitle relRoot ++ inner ++ htmlFoot
 
-/-- Build a site index page from a list of (filename, title)
-    pairs. -/
+/-- Site index page (the home page).  Lays out a sidebar (same
+    one used on every chapter) plus a welcome panel on the right
+    that lists the chapters again with their titles. -/
 def renderSiteIndex (siteTitle : String)
-    (chapters : Array (String × String)) : String :=
-  let body :=
+    (chapters : Array (String × String))
+    (intro : String := "") : String :=
+  let sidebar := renderSidebar siteTitle chapters (current := some "index.html")
+  let chapterList := chapters.foldl (init := "") fun acc (file, title) =>
+    let (num, short) := stripChapterPrefix title
+    let label :=
+      if num.isEmpty then escHtml short
+      else "<span class=\"chnum\">" ++ escHtml num ++ "</span> "
+           ++ escHtml short
+    acc ++ "  <li><a href=\"" ++ escHtml file ++ "\">" ++ label ++ "</a></li>\n"
+  let introBlock :=
+    if intro.isEmpty then ""
+    else "<p class=\"intro\">" ++ escHtml intro ++ "</p>\n"
+  let content :=
+    "<main class=\"content\">\n" ++
     "<h1>" ++ escHtml siteTitle ++ "</h1>\n" ++
-    "<ul class=\"toc\">\n" ++
-    chapters.foldl (init := "") (fun acc (file, title) =>
-      acc ++ "  <li><a href=\"" ++ escHtml file ++ "\">"
-          ++ escHtml title ++ "</a></li>\n") ++
-    "</ul>\n"
-  htmlHead siteTitle "./" ++ body ++ htmlFoot
+    introBlock ++
+    "<h2>Chapters</h2>\n" ++
+    "<ul class=\"toc\">\n" ++ chapterList ++ "</ul>\n" ++
+    "</main>\n"
+  htmlHead siteTitle "./" ++
+  "<div class=\"layout\">\n" ++ sidebar ++ content ++ "</div>\n" ++
+  htmlFoot
+
+/-! ## 6. ipynb → cells (reverse direction)
+
+This lets a user round-trip:
+    .md  -- xlean-convert --to ipynb -->  .ipynb  (run in Jupyter)
+    .ipynb  -- xlean-convert --to md -->  .md  (with outputs baked in)
+
+After the second leg the Markdown source carries every cell's
+evaluated output as ` ```output[:MIME] ` fences below the code,
+so the file is git-diff-friendly and renders with results when
+passed through `--to html`.
+-/
+
+open Lean (FromJson)
+
+/-- Parse a Jupyter ipynb document into our cell representation.
+    Recognises the same MIME types that `outputToHtml` knows how
+    to render; everything else falls through as a plain-text
+    output tagged with its mime type as a language hint. -/
+def parseIpynb (src : String) : Except String (Array Cell) := do
+  let json ← Json.parse src
+  let nb := json
+  let cellsJson ← nb.getObjValAs? (Array Json) "cells"
+  let mut out : Array Cell := Array.mkEmpty cellsJson.size
+  for cj in cellsJson do
+    let ctype ← cj.getObjValAs? String "cell_type"
+    -- Source can be a string or an array of strings.
+    let srcLines : Array String ←
+      match cj.getObjVal? "source" with
+      | .ok (.str s)  => pure (s.splitOn "\n").toArray
+      | .ok (.arr arr) =>
+        pure <| arr.map fun j =>
+          match j with | .str s => s | _ => ""
+      | _ => pure #[]
+    -- Strip a single trailing "\n" from each array entry (ipynb
+    -- convention) and re-split on any embedded newlines.
+    let normLines (ls : Array String) : Array String := Id.run do
+      let mut acc : Array String := #[]
+      for l in ls do
+        let l := if l.endsWith "\n" then l.dropEnd 1 |>.toString else l
+        for piece in l.splitOn "\n" do
+          acc := acc.push piece
+      pure acc
+    let body := normLines srcLines
+    match ctype with
+    | "markdown" =>
+      out := out.push (.markdown body)
+    | "code" | "raw" =>
+      -- Pull outputs (only meaningful for code cells; raw cells
+      -- typically have none).
+      let outsJson : Array Json :=
+        match cj.getObjVal? "outputs" with
+        | .ok (.arr a) => a
+        | _            => #[]
+      let mut outs : Array CellOutput := #[]
+      for oj in outsJson do
+        let otype := (oj.getObjValAs? String "output_type").toOption.getD ""
+        match otype with
+        | "stream" =>
+          let text : Array String ←
+            match oj.getObjVal? "text" with
+            | .ok (.str s)  => pure (s.splitOn "\n").toArray
+            | .ok (.arr a)  => pure <| a.map fun j =>
+              match j with | .str s => s | _ => ""
+            | _ => pure #[]
+          outs := outs.push { mime := "", lines := normLines text }
+        | "execute_result" | "display_data" =>
+          let dataObj : Json :=
+            (oj.getObjVal? "data").toOption.getD (Json.mkObj [])
+          let metaObj : Json :=
+            (oj.getObjVal? "metadata").toOption.getD (Json.mkObj [])
+          let xleanLang : String :=
+            (metaObj.getObjValAs? String "xleanLanguage").toOption.getD ""
+          -- Pick the most informative MIME type available, in
+          -- this preference order:
+          let prefs := #[
+            "image/svg+xml", "text/html", "text/latex",
+            "text/markdown", "application/json", "text/plain"]
+          let mut picked : Option (String × Array String) := none
+          for m in prefs do
+            if picked.isSome then continue
+            match dataObj.getObjVal? m with
+            | .ok (.str s) =>
+              picked := some (m, (s.splitOn "\n").toArray)
+            | .ok (.arr a) =>
+              let ls := a.map fun j =>
+                match j with | .str s => s | _ => ""
+              picked := some (m, ls)
+            | _ => pure ()
+          match picked with
+          | some (m, ls) =>
+            outs := outs.push
+              { mime := m, language := xleanLang, lines := normLines ls }
+          | none => pure ()
+        | "error" =>
+          -- Render error tracebacks as a plain-text stream-style
+          -- output so they survive the round-trip.
+          let tb : Array String :=
+            match oj.getObjVal? "traceback" with
+            | .ok (.arr a) => a.map fun j =>
+              match j with | .str s => s | _ => ""
+            | _ => #[]
+          outs := outs.push { mime := "", lines := normLines tb }
+        | _ => pure ()
+      out := out.push (.code body outs)
+    | _ =>
+      -- Unknown cell_type: drop.
+      pure ()
+  return out
+
+/-! ## 7. Cells → Markdown (with `output:*` fences) -/
+
+/-- Render a CellOutput as a ` ```output[:MIME] ` fence. -/
+private def outputToMd (o : CellOutput) : String :=
+  let tag : String :=
+    if o.mime.isEmpty then "output"
+    else
+      match o.mime with
+      | "text/html"        => "output:html"
+      | "image/svg+xml"    => "output:svg"
+      | "text/latex"       => "output:latex"
+      | "text/markdown"    => "output:md"
+      | "application/json" => "output:json"
+      | "text/plain"       =>
+        if o.language.isEmpty then "output:plain"
+        else "output:" ++ o.language
+      | other => "output:" ++ other
+  let body := o.lines.foldl (init := "") fun acc l => acc ++ l ++ "\n"
+  "```" ++ tag ++ "\n" ++ body ++ "```\n"
+
+/-- Render one cell as Markdown.  Code cells become ` ```lean `
+    fences followed by zero or more ` ```output[:MIME] ` fences. -/
+private def cellToMd : Cell → String
+  | .markdown ls =>
+    -- Markdown cells just dump their lines back verbatim.
+    let body := ls.foldl (init := "") fun acc l => acc ++ l ++ "\n"
+    body
+  | .code ls outs =>
+    let body := ls.foldl (init := "") fun acc l => acc ++ l ++ "\n"
+    let outBlocks := outs.foldl (init := "") fun acc o => acc ++ outputToMd o
+    "```lean\n" ++ body ++ "```\n" ++ outBlocks
+
+/-- Serialise cells back to Markdown.  Cells are separated by a
+    blank line so the result is easy to diff. -/
+def cellsToMarkdown (cells : Array Cell) : String :=
+  let parts := cells.map cellToMd
+  parts.foldl (init := "") fun acc s =>
+    if acc.isEmpty then s
+    else
+      -- Ensure exactly one blank line between cells.
+      let prev := if acc.endsWith "\n" then acc else acc ++ "\n"
+      prev ++ "\n" ++ s
 
 end Convert

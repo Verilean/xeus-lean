@@ -36,6 +36,7 @@ inductive Target where
   | ipynb
   | lean
   | html
+  | md
   deriving Repr, BEq
 
 structure Opts where
@@ -51,14 +52,18 @@ structure Opts where
 instance : Inhabited Opts := ⟨{}⟩
 
 private def usage : String :=
-  "usage: xlean-convert --to {ipynb|lean|html} [-o OUTPUT] INPUT.md\n" ++
+  "usage: xlean-convert --to {ipynb|lean|html|md} [-o OUTPUT] INPUT\n" ++
   "       xlean-convert --site DIR [-o OUTDIR] [--title TITLE]\n\n" ++
-  "  --to TARGET   ipynb (default), lean (.lean:percent), or html\n" ++
+  "  --to TARGET   ipynb (default), lean (.lean:percent), html, or md\n" ++
   "  -o OUTPUT     output file (or directory for --site)\n" ++
   "                defaults to derived name; '-' = stdout\n" ++
-  "  --site DIR    build a static HTML site from every Ch*.md in DIR\n" ++
+  "  --site DIR    build a static HTML site from every Ch*.{md,ipynb}\n" ++
   "  --title TXT   site index title (site mode only)\n" ++
-  "  INPUT         input .md file; '-' = stdin\n"
+  "  INPUT         input .md or .ipynb file; '-' = stdin (md)\n" ++
+  "                (When INPUT is .ipynb the source is parsed as a\n" ++
+  "                Jupyter notebook; otherwise as Markdown.  This\n" ++
+  "                lets `--to md` bake the cell outputs of an\n" ++
+  "                already-evaluated notebook into a Markdown file.)\n"
 
 private def parseArgs (argv : List String) : Except String Opts := do
   let mut opts : Opts := {}
@@ -71,6 +76,7 @@ private def parseArgs (argv : List String) : Except String Opts := do
       | "ipynb" => opts := { opts with target := .ipynb }
       | "lean"  => opts := { opts with target := .lean  }
       | "html"  => opts := { opts with target := .html  }
+      | "md"    => opts := { opts with target := .md    }
       | other   => throw s!"unknown --to target: {other}"
       rest := tail
     | "-o" :: v :: tail =>
@@ -100,10 +106,12 @@ private def deriveOutputName (input : String) (target : Target) : String :=
     | .ipynb => ".ipynb"
     | .lean  => ".lean"
     | .html  => ".html"
-  -- Strip a trailing .md / .markdown if present.
+    | .md    => ".md"
+  -- Strip a trailing .md / .markdown / .ipynb if present.
   let stem :=
     if input.endsWith ".md" then (input.dropEnd 3).toString
     else if input.endsWith ".markdown" then (input.dropEnd 9).toString
+    else if input.endsWith ".ipynb" then (input.dropEnd 6).toString
     else input
   stem ++ ext
 
@@ -120,15 +128,28 @@ private def writeOutput (path : String) (content : String) : IO Unit :=
   else
     IO.FS.writeFile path content
 
+/-- Parse INPUT into cells, picking the parser by file extension.
+    `.ipynb` → Jupyter parser (keeps outputs); anything else → md. -/
+private def loadCells (path : String) : IO (Array Convert.Cell) := do
+  let src ← readInput path
+  if path.endsWith ".ipynb" then
+    match Convert.parseIpynb src with
+    | .ok cs => pure cs
+    | .error e => do
+      IO.eprintln s!"ipynb parse error: {e}"
+      pure #[]
+  else
+    pure (Convert.parseMarkdown src)
+
 /-- Single-file conversion path (non-site mode). -/
 private def runSingle (opts : Opts) : IO UInt32 := do
-  let src ← readInput opts.input
-  let cells := Convert.parseMarkdown src
+  let cells ← loadCells opts.input
   let rendered :=
     match opts.target with
     | .ipynb => (Convert.cellsToIpynb cells).pretty 1
     | .lean  => Convert.cellsToPercent cells
     | .html  => Convert.cellsToHtml cells
+    | .md    => Convert.cellsToMarkdown cells
   let outPath :=
     match opts.output with
     | some p => p
@@ -138,10 +159,11 @@ private def runSingle (opts : Opts) : IO UInt32 := do
   writeOutput outPath rendered
   return 0
 
-/-- Replace a trailing `.md` / `.markdown` with `.html`. -/
+/-- Replace a trailing `.md` / `.markdown` / `.ipynb` with `.html`. -/
 private def mdToHtml (name : String) : String :=
   if name.endsWith ".md" then (name.dropEnd 3).toString ++ ".html"
   else if name.endsWith ".markdown" then (name.dropEnd 9).toString ++ ".html"
+  else if name.endsWith ".ipynb" then (name.dropEnd 6).toString ++ ".html"
   else name ++ ".html"
 
 /-- Site-mode conversion: walk INPUT_DIR, render Ch*.md to
@@ -156,27 +178,50 @@ private def runSite (opts : Opts) : IO UInt32 := do
     return 2
   IO.FS.createDirAll outputPath
 
-  -- Discover Ch*.md inputs, sorted lexicographically (Ch00..Ch10).
+  -- Discover Ch*.{md,ipynb} inputs, sorted lexicographically.
+  -- If both Ch01.md and Ch01.ipynb exist, the ipynb wins (it has
+  -- outputs baked in).
   let entries ← inputPath.readDir
   let chFiles : Array String :=
     entries.filterMap fun e =>
       let n := e.fileName
-      if n.startsWith "Ch" && (n.endsWith ".md" || n.endsWith ".markdown")
+      if n.startsWith "Ch" &&
+         (n.endsWith ".md" || n.endsWith ".markdown" || n.endsWith ".ipynb")
       then some n else none
+  -- De-dup by stem, preferring ipynb.
+  let stemOf (s : String) : String :=
+    if s.endsWith ".ipynb" then (s.dropEnd 6).toString
+    else if s.endsWith ".md" then (s.dropEnd 3).toString
+    else if s.endsWith ".markdown" then (s.dropEnd 9).toString
+    else s
+  let chFiles : Array String := Id.run do
+    let mut seen : Std.HashMap String String := {}
+    for f in chFiles do
+      let stem := stemOf f
+      match seen[stem]? with
+      | none => seen := seen.insert stem f
+      | some prev =>
+        -- Prefer ipynb when both exist.
+        if f.endsWith ".ipynb" then seen := seen.insert stem f
+        else if prev.endsWith ".ipynb" then pure ()
+        else seen := seen.insert stem f
+    pure (seen.toArray.map (·.2))
   let chFiles := chFiles.qsort (· < ·)
   if chFiles.isEmpty then
-    IO.eprintln s!"--site: no Ch*.md files in {inputDir}"
+    IO.eprintln s!"--site: no Ch*.md / Ch*.ipynb files in {inputDir}"
     return 2
 
   -- First pass: parse every chapter, extract title.
   let mut chapters : Array (String × String × Array Convert.Cell) := #[]
   for fname in chFiles do
-    let src ← IO.FS.readFile (inputPath / fname)
-    let cells := Convert.parseMarkdown src
+    let cells ← loadCells (inputPath / fname).toString
     let title := Convert.chapterTitle cells
     chapters := chapters.push (mdToHtml fname, title, cells)
 
-  -- Second pass: write each chapter with prev/next nav.
+  let toc : Array (String × String) :=
+    chapters.map fun (f, t, _) => (f, t)
+
+  -- Second pass: write each chapter with prev/next nav + sidebar.
   let n := chapters.size
   for i in [:n] do
     let (fname, title, cells) := chapters[i]!
@@ -188,16 +233,16 @@ private def runSite (opts : Opts) : IO UInt32 := do
                    let (nf, nt, _) := chapters[i+1]!
                    some (nf, nt)
                  else none
+    let sidebar := Convert.renderSidebar opts.title toc (some fname)
     let html := Convert.cellsToHtml cells
                   (title := some title)
                   (prev? := prev?) (next? := next?)
                   (relRoot := "./")
+                  (sidebar := sidebar)
     IO.FS.writeFile (outputPath / fname) html
     IO.println s!"wrote {outputDir}/{fname}  ({title})"
 
-  -- Index page.
-  let toc : Array (String × String) :=
-    chapters.map fun (f, t, _) => (f, t)
+  -- Index page (with same sidebar).
   let index := Convert.renderSiteIndex opts.title toc
   IO.FS.writeFile (outputPath / "index.html") index
   IO.println s!"wrote {outputDir}/index.html  ({opts.title})"
