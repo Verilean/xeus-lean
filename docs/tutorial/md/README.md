@@ -39,9 +39,9 @@ chapter without firing up a kernel.
 - **Ch12 — [Sockets and networking](Ch12_Network.md)** — `Std.Net` TCP/UDP, HTTP via `curl` + `Lean.Data.Json`
 - **Ch13 — [Tasks, refs, mutexes](Ch13_Concurrency.md)** — `IO.asTask` / `wait`, `Std.Mutex`, `Std.Channel`, race + cooperative cancel
 
-### Part IV — Optional deeper dives *(coming soon)*
-- Ch14 — JSON
-- Ch15 — Macros (the `Display.*` story)
+### Part IV — Optional deeper dives
+- **Ch14 — [JSON](Ch14_JSON.md)** — `Json.mkObj`, `compress` / `pretty`, parsing, `deriving ToJson, FromJson`, `.jsonl` streaming
+- **Ch15 — [Macros](Ch15_Macros.md)** — `notation`, `macro`, `elab`, hygiene, anti-quotation, when *not* to write one
 
 ## How this is built
 
