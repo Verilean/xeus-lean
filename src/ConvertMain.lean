@@ -1,18 +1,28 @@
 /-
-ConvertMain — CLI driver for the Markdown → Jupyter / Lean
+ConvertMain — CLI driver for the Markdown → Jupyter / Lean / HTML
 converter.
 
 Usage:
 
-  xlean-convert --to ipynb chapter.md           # → chapter.ipynb
-  xlean-convert --to ipynb -o out.ipynb in.md   # explicit output
-  xlean-convert --to lean  chapter.md           # → chapter.lean
-  xlean-convert --to lean  -o out.lean in.md
-  xlean-convert --to ipynb -                    # stdin → stdout
+  Single-file mode:
+    xlean-convert --to ipynb chapter.md           # → chapter.ipynb
+    xlean-convert --to ipynb -o out.ipynb in.md   # explicit output
+    xlean-convert --to lean  chapter.md           # → chapter.lean
+    xlean-convert --to html  chapter.md           # → chapter.html
+    xlean-convert --to ipynb -                    # stdin → stdout
+
+  Site mode (Markdown directory → static HTML site):
+    xlean-convert --site docs/tutorial/md \
+                  --output _site \
+                  [--title "My Tutorial"]
+
+  In site mode every `Ch*.md` (sorted) under the input directory
+  becomes a chapter page; `README.md`, if present, supplies the
+  index intro. Output directory is overwritten in-place.
 
 When `-o` is omitted, the output filename is derived from the
-input by replacing the extension.  When the input is `-`, we
-read from stdin.  When `-o` is `-` (or is omitted *and* input is
+input by replacing the extension. When the input is `-`, we
+read from stdin. When `-o` is `-` (or is omitted *and* input is
 `-`), we write to stdout.
 -/
 
@@ -25,9 +35,15 @@ open Lean (Json)
 inductive Target where
   | ipynb
   | lean
+  | html
   deriving Repr, BEq
 
 structure Opts where
+  /-- Site mode is requested via `--site DIR`.  When set, INPUT and
+      --to are ignored and the directory is processed as a whole. -/
+  site    : Option String := none
+  /-- Site-mode title (defaults to "Tutorial"). -/
+  title   : String := "Tutorial"
   target  : Target := .ipynb
   input   : String := "-"
   output  : Option String := none
@@ -35,9 +51,13 @@ structure Opts where
 instance : Inhabited Opts := ⟨{}⟩
 
 private def usage : String :=
-  "usage: xlean-convert --to {ipynb|lean} [-o OUTPUT] INPUT.md\n\n" ++
-  "  --to TARGET   ipynb (default) or lean (.lean:percent)\n" ++
-  "  -o OUTPUT     output file; defaults to derived name; '-' = stdout\n" ++
+  "usage: xlean-convert --to {ipynb|lean|html} [-o OUTPUT] INPUT.md\n" ++
+  "       xlean-convert --site DIR [-o OUTDIR] [--title TITLE]\n\n" ++
+  "  --to TARGET   ipynb (default), lean (.lean:percent), or html\n" ++
+  "  -o OUTPUT     output file (or directory for --site)\n" ++
+  "                defaults to derived name; '-' = stdout\n" ++
+  "  --site DIR    build a static HTML site from every Ch*.md in DIR\n" ++
+  "  --title TXT   site index title (site mode only)\n" ++
   "  INPUT         input .md file; '-' = stdin\n"
 
 private def parseArgs (argv : List String) : Except String Opts := do
@@ -50,10 +70,17 @@ private def parseArgs (argv : List String) : Except String Opts := do
       match v with
       | "ipynb" => opts := { opts with target := .ipynb }
       | "lean"  => opts := { opts with target := .lean  }
+      | "html"  => opts := { opts with target := .html  }
       | other   => throw s!"unknown --to target: {other}"
       rest := tail
     | "-o" :: v :: tail =>
       opts := { opts with output := some v }
+      rest := tail
+    | "--site" :: v :: tail =>
+      opts := { opts with site := some v }
+      rest := tail
+    | "--title" :: v :: tail =>
+      opts := { opts with title := v }
       rest := tail
     | "--help" :: _ | "-h" :: _ =>
       throw usage
@@ -61,12 +88,18 @@ private def parseArgs (argv : List String) : Except String Opts := do
       posArgs := posArgs.push a
       rest := tail
     | [] => rest := []
-  if posArgs.size != 1 then
-    throw s!"expected exactly one INPUT argument, got {posArgs.size}\n\n{usage}"
-  pure { opts with input := posArgs[0]! }
+  if opts.site.isSome then
+    pure opts
+  else
+    if posArgs.size != 1 then
+      throw s!"expected exactly one INPUT argument, got {posArgs.size}\n\n{usage}"
+    pure { opts with input := posArgs[0]! }
 
 private def deriveOutputName (input : String) (target : Target) : String :=
-  let ext := match target with | .ipynb => ".ipynb" | .lean => ".lean"
+  let ext := match target with
+    | .ipynb => ".ipynb"
+    | .lean  => ".lean"
+    | .html  => ".html"
   -- Strip a trailing .md / .markdown if present.
   let stem :=
     if input.endsWith ".md" then (input.dropEnd 3).toString
@@ -87,22 +120,15 @@ private def writeOutput (path : String) (content : String) : IO Unit :=
   else
     IO.FS.writeFile path content
 
-unsafe def main (argv : List String) : IO UInt32 := do
-  let opts ← match parseArgs argv with
-    | .ok o => pure o
-    | .error e => do
-      IO.eprintln e
-      return 2
+/-- Single-file conversion path (non-site mode). -/
+private def runSingle (opts : Opts) : IO UInt32 := do
   let src ← readInput opts.input
   let cells := Convert.parseMarkdown src
   let rendered :=
     match opts.target with
-    | .ipynb =>
-      -- Pretty-print with 1-space indent so .ipynb diffs are
-      -- legible in code review.
-      (Convert.cellsToIpynb cells).pretty 1
-    | .lean =>
-      Convert.cellsToPercent cells
+    | .ipynb => (Convert.cellsToIpynb cells).pretty 1
+    | .lean  => Convert.cellsToPercent cells
+    | .html  => Convert.cellsToHtml cells
   let outPath :=
     match opts.output with
     | some p => p
@@ -111,3 +137,81 @@ unsafe def main (argv : List String) : IO UInt32 := do
       else deriveOutputName opts.input opts.target
   writeOutput outPath rendered
   return 0
+
+/-- Replace a trailing `.md` / `.markdown` with `.html`. -/
+private def mdToHtml (name : String) : String :=
+  if name.endsWith ".md" then (name.dropEnd 3).toString ++ ".html"
+  else if name.endsWith ".markdown" then (name.dropEnd 9).toString ++ ".html"
+  else name ++ ".html"
+
+/-- Site-mode conversion: walk INPUT_DIR, render Ch*.md to
+    HTML chapter pages and emit an index.html + style.css. -/
+private def runSite (opts : Opts) : IO UInt32 := do
+  let inputDir := opts.site.get!
+  let outputDir := opts.output.getD "_site"
+  let inputPath  := System.FilePath.mk inputDir
+  let outputPath := System.FilePath.mk outputDir
+  if ! (← inputPath.isDir) then
+    IO.eprintln s!"--site: not a directory: {inputDir}"
+    return 2
+  IO.FS.createDirAll outputPath
+
+  -- Discover Ch*.md inputs, sorted lexicographically (Ch00..Ch10).
+  let entries ← inputPath.readDir
+  let chFiles : Array String :=
+    entries.filterMap fun e =>
+      let n := e.fileName
+      if n.startsWith "Ch" && (n.endsWith ".md" || n.endsWith ".markdown")
+      then some n else none
+  let chFiles := chFiles.qsort (· < ·)
+  if chFiles.isEmpty then
+    IO.eprintln s!"--site: no Ch*.md files in {inputDir}"
+    return 2
+
+  -- First pass: parse every chapter, extract title.
+  let mut chapters : Array (String × String × Array Convert.Cell) := #[]
+  for fname in chFiles do
+    let src ← IO.FS.readFile (inputPath / fname)
+    let cells := Convert.parseMarkdown src
+    let title := Convert.chapterTitle cells
+    chapters := chapters.push (mdToHtml fname, title, cells)
+
+  -- Second pass: write each chapter with prev/next nav.
+  let n := chapters.size
+  for i in [:n] do
+    let (fname, title, cells) := chapters[i]!
+    let prev? := if i > 0 then
+                   let (pf, pt, _) := chapters[i-1]!
+                   some (pf, pt)
+                 else none
+    let next? := if i + 1 < n then
+                   let (nf, nt, _) := chapters[i+1]!
+                   some (nf, nt)
+                 else none
+    let html := Convert.cellsToHtml cells
+                  (title := some title)
+                  (prev? := prev?) (next? := next?)
+                  (relRoot := "./")
+    IO.FS.writeFile (outputPath / fname) html
+    IO.println s!"wrote {outputDir}/{fname}  ({title})"
+
+  -- Index page.
+  let toc : Array (String × String) :=
+    chapters.map fun (f, t, _) => (f, t)
+  let index := Convert.renderSiteIndex opts.title toc
+  IO.FS.writeFile (outputPath / "index.html") index
+  IO.println s!"wrote {outputDir}/index.html  ({opts.title})"
+
+  -- Stylesheet.
+  IO.FS.writeFile (outputPath / "style.css") Convert.defaultStylesheet
+  IO.println s!"wrote {outputDir}/style.css"
+
+  return 0
+
+unsafe def main (argv : List String) : IO UInt32 := do
+  let opts ← match parseArgs argv with
+    | .ok o => pure o
+    | .error e => do
+      IO.eprintln e
+      return 2
+  if opts.site.isSome then runSite opts else runSingle opts
