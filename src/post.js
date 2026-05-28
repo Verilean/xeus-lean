@@ -269,19 +269,24 @@ Module.preRun.push(function () {
     if (db) {
       try {
         var cached = await idbGet(db, expandedKey);
-        if (cached && cached.raw instanceof Blob &&
-            Array.isArray(cached.names) &&
-            cached.offsets instanceof Uint32Array &&
-            cached.lengths instanceof Uint32Array &&
-            cached.names.length === cached.offsets.length) {
-          var tHit = (typeof performance !== 'undefined') ? performance.now() : 0;
-          var ab = await cached.raw.arrayBuffer();
-          var raw = new Uint8Array(ab);
-          var tWrite = (typeof performance !== 'undefined') ? performance.now() : 0;
-          log(modName + ': expanded-cache hit, ' + Math.round(raw.length/1024/1024) + 'MB Blob → AB in ' + Math.round(tWrite - tHit) + 'ms');
-          return writeEntriesFromBuffer(modName, raw, cached.names, cached.offsets, cached.lengths);
+        if (cached) {
+          var okRaw = cached.raw instanceof Blob;
+          var okNames = Array.isArray(cached.names);
+          var okOff = cached.offsets instanceof Uint32Array;
+          var okLen = cached.lengths instanceof Uint32Array;
+          var okLenMatch = okNames && okOff && cached.names.length === cached.offsets.length;
+          if (okRaw && okNames && okOff && okLen && okLenMatch) {
+            var tHit = (typeof performance !== 'undefined') ? performance.now() : 0;
+            var ab = await cached.raw.arrayBuffer();
+            var raw = new Uint8Array(ab);
+            var tWrite = (typeof performance !== 'undefined') ? performance.now() : 0;
+            log(modName + ': expanded-cache hit, ' + Math.round(raw.length/1024/1024) + 'MB Blob → AB in ' + Math.round(tWrite - tHit) + 'ms');
+            return writeEntriesFromBuffer(modName, raw, cached.names, cached.offsets, cached.lengths);
+          } else {
+            log(modName + ': expanded-cache shape mismatch raw=' + okRaw + ' names=' + okNames + ' off=' + okOff + ' len=' + okLen + ' match=' + okLenMatch);
+          }
         }
-      } catch (e) { /* fall through */ }
+      } catch (e) { log(modName + ': expanded-cache read error: ' + e); }
     }
 
     // (B) Try compressed-tarball cache.
@@ -297,7 +302,7 @@ Module.preRun.push(function () {
           compressed = new Uint8Array(ab2);
           log(modName + ': compressed-cache hit (' + Math.round(compressed.byteLength / 1024 / 1024) + ' MB)');
         }
-      } catch (e) { /* fall through */ }
+      } catch (e) { log(modName + ': compressed-cache read error: ' + e); }
     }
 
     // (C) Fetch from network if neither cache hit.
