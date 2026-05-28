@@ -309,18 +309,55 @@ Module.preRun.push(function () {
     var tWrite = (typeof performance !== 'undefined') ? performance.now() : 0;
     log(modName + ': parsed ' + entries.length + ' entries in ' + Math.round(tWrite - tParse) + 'ms');
 
+    // ---- 4c. Write entries to MEMFS --------------------------------
+    //
+    // `FS.writeFile` allocates a fresh buffer for every entry and
+    // memcpys data into it.  For 5000-7000 small files (one per
+    // Std/Lean module) that loop dominated worker wall-clock —
+    // 7+ seconds on a fast laptop, all of it busy inside one
+    // microtask chain so the page sees no progress.
+    //
+    // `FS.createDataFile(parent, name, data, canRead, canWrite,
+    //                    canOwn)` is the lower-level entry point.
+    // The `canOwn` flag tells emscripten that we promise not to
+    // mutate `data` afterwards, so MEMFS can keep a reference to
+    // the same Uint8Array instead of copying.  For our case the
+    // entries come from `parseTar(raw)` and `raw` is the
+    // decompressed tarball that we hold for the duration of
+    // loadModule(); after this we discard `raw` and the file
+    // handles take ownership.
+    //
+    // Also do mkdir-once-per-prefix: previously every file walked
+    // its full parent path through `mkdirP`, which mkdir'd the
+    // same `/lib/lean/Std/Data/HashMap/` thousands of times.
+    // Cache "we've already made this dir" across the loop.
+    var madeDirs = Object.create(null);
+    function ensureDir(path) {
+      if (madeDirs[path]) return;
+      var parts = path.split('/').filter(Boolean);
+      var cur = '';
+      for (var i = 0; i < parts.length; i++) {
+        cur += '/' + parts[i];
+        if (madeDirs[cur]) continue;
+        try { FS.mkdir(cur); } catch (e) { /* exists */ }
+        madeDirs[cur] = 1;
+      }
+    }
+
     var written = 0;
     for (var k = 0; k < entries.length; k++) {
       var e = entries[k];
       if (!e.name) continue;
-      var vfsPath = '/lib/lean/' + e.name;
-      var slash = vfsPath.lastIndexOf('/');
-      if (slash > 0) mkdirP(vfsPath.substring(0, slash));
+      var slash = e.name.lastIndexOf('/');
+      var dir = slash > 0 ? '/lib/lean/' + e.name.substring(0, slash) : '/lib/lean';
+      var base = slash > 0 ? e.name.substring(slash + 1) : e.name;
+      ensureDir(dir);
       try {
-        try { FS.stat(vfsPath); continue; } catch (_) {}
-        FS.writeFile(vfsPath, e.data);
+        FS.createDataFile(dir, base, e.data, true, false, true);
         written++;
-      } catch (_) { /* per-file failure is non-fatal */ }
+      } catch (err) {
+        // Likely EEXIST (a previous load wrote this path).  Skip.
+      }
     }
     var tDone = (typeof performance !== 'undefined') ? performance.now() : 0;
     log(modName + ': VFS write ' + written + ' files in ' + Math.round(tDone - tWrite) + 'ms');
