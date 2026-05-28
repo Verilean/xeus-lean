@@ -29,7 +29,14 @@ Module.preRun = Module.preRun || [];
 Module.preRun.push(function () {
   'use strict';
 
-  function log(msg) { try { console.error('[olean] ' + msg); } catch(_) {} }
+  var T0 = (typeof performance !== 'undefined' && performance.now)
+    ? performance.now() : Date.now();
+  function ts() {
+    var now = (typeof performance !== 'undefined' && performance.now)
+      ? performance.now() : Date.now();
+    return '+' + Math.round(now - T0) + 'ms';
+  }
+  function log(msg) { try { console.error('[olean ' + ts() + '] ' + msg); } catch(_) {} }
 
   // We used to do `new XMLHttpRequest(); xhr.open(..., false)` (sync XHR)
   // but JupyterLite's service worker on GitHub Pages silently fails the
@@ -289,13 +296,18 @@ Module.preRun.push(function () {
       }
     }
 
+    var tDecompress = (typeof performance !== 'undefined') ? performance.now() : 0;
     var raw;
     try { raw = fzstd.decompress(compressed); }
     catch (e) { log(modName + ': decompress error: ' + e); return 0; }
+    var tParse = (typeof performance !== 'undefined') ? performance.now() : 0;
+    log(modName + ': decompressed ' + Math.round(raw.length/1024/1024) + 'MB in ' + Math.round(tParse - tDecompress) + 'ms');
 
     var entries;
     try { entries = parseTar(raw); }
     catch (e) { log(modName + ': tar parse error: ' + e); return 0; }
+    var tWrite = (typeof performance !== 'undefined') ? performance.now() : 0;
+    log(modName + ': parsed ' + entries.length + ' entries in ' + Math.round(tWrite - tParse) + 'ms');
 
     var written = 0;
     for (var k = 0; k < entries.length; k++) {
@@ -310,6 +322,8 @@ Module.preRun.push(function () {
         written++;
       } catch (_) { /* per-file failure is non-fatal */ }
     }
+    var tDone = (typeof performance !== 'undefined') ? performance.now() : 0;
+    log(modName + ': VFS write ' + written + ' files in ' + Math.round(tDone - tWrite) + 'ms');
     log(modName + ': wrote ' + written + ' / ' + entries.length + ' files to /lib/lean/');
     return written;
   }
