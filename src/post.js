@@ -231,9 +231,16 @@ Module.preRun.push(function () {
   function idbPut(db, key, val) {
     return new Promise(function (resolve, reject) {
       var tx = db.transaction(STORE, 'readwrite');
-      var rq = tx.objectStore(STORE).put(val, key);
-      rq.onsuccess = function () { resolve(); };
-      rq.onerror   = function () { reject(rq.error); };
+      tx.objectStore(STORE).put(val, key);
+      // Resolve on tx.oncomplete, not request.onsuccess: the put
+      // request fires before the transaction commits, so a quick
+      // page close after `await idbPut(...)` returned could still
+      // lose the write.  Waiting for tx.oncomplete guarantees the
+      // bytes are on disk (or at least committed to the IDB
+      // backing store) before we return.
+      tx.oncomplete = function () { resolve(); };
+      tx.onerror    = function () { reject(tx.error); };
+      tx.onabort    = function () { reject(tx.error); };
     });
   }
 
