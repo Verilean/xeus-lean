@@ -269,7 +269,7 @@ jobs:
         find "$PREFIX/share/jupyter/kernels" -type f -ls 2>/dev/null || echo "No kernels found"
         pixi run -e wasm-build jupyter lite build \
           --XeusAddon.prefix="$PREFIX" \
-          "--XeusAddon.default_channels=[https://conda.anaconda.org/conda-forge]" \
+          "--XeusAddon.default_channels=[]" \
           --contents notebooks \
           --output-dir _output \
           --force

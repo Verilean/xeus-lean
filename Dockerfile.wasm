@@ -109,7 +109,7 @@ RUN mkdir -p notebooks && \
     echo "=== Building JupyterLite with PREFIX: $PREFIX ===" && \
     pixi run -e wasm-build jupyter lite build \
       --XeusAddon.prefix="$PREFIX" \
-      "--XeusAddon.default_channels=[https://conda.anaconda.org/conda-forge]" \
+      "--XeusAddon.default_channels=[]" \
       --contents notebooks \
       --output-dir _output \
       --force && \
