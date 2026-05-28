@@ -388,54 +388,68 @@ ${_init_stub_decls}}
         if(EXISTS "${LEAN_OLEAN_SRC}/Init.olean")
             message(STATUS "Lean .olean source: ${LEAN_OLEAN_SRC}")
 
-            # Copy all Init module artifacts (top-level + recursive)
-            # Lean 4.28+ splits module data into multiple parts:
-            #   .olean          = exported level
-            #   .olean.server   = server level
-            #   .olean.private  = private level (needed for `import all`)
-            #   .ir             = IR data (needed for interpretation/elaboration)
+            # Init .olean files used to be `--embed-file`'d into
+            # xlean.wasm so they were available immediately at
+            # WASM main() entry.  Init is ~350MB of olean which
+            # blew the WASM binary up to ~480MB, all of which the
+            # browser had to decode and keep in Linear Memory for
+            # every notebook.  Now we ship Init as a tarball
+            # alongside Std/Lean/Sparkle (see OLEAN_ASSETS_DIR
+            # below); post.js fetches and unpacks it in preRun,
+            # which blocks WASM main() until /lib/lean/Init/ is
+            # populated, so the runtime sees the same VFS layout
+            # as before.
+            #
+            # What still needs embedding: Display + CommBus.
+            # These are tiny (~hundreds of KB) and our auto-import
+            # logic in REPL/Frontend touches them on cell 1, so
+            # having them available without a separate fetch
+            # simplifies boot.  Anything else added to
+            # LEAN_OLEAN_STAGING below also gets embedded.
             file(MAKE_DIRECTORY "${LEAN_OLEAN_STAGING}")
 
-            # Copy ALL Init module artifacts (olean, server, private, ir)
-            # Init must be fully embedded for basic Lean to work.
-            foreach(_ext olean olean.server olean.private ir)
-                if(EXISTS "${LEAN_OLEAN_SRC}/Init.${_ext}")
-                    file(COPY "${LEAN_OLEAN_SRC}/Init.${_ext}" DESTINATION "${LEAN_OLEAN_STAGING}/")
-                endif()
-            endforeach()
-
-            # Copy all Init/**/* files preserving directory structure
-            file(GLOB_RECURSE _INIT_FILES
-                RELATIVE "${LEAN_OLEAN_SRC}"
-                "${LEAN_OLEAN_SRC}/Init/*.olean"
-                "${LEAN_OLEAN_SRC}/Init/*.olean.server"
-                "${LEAN_OLEAN_SRC}/Init/*.olean.private"
-                "${LEAN_OLEAN_SRC}/Init/*.ir")
-            list(LENGTH _INIT_FILES _file_count)
-            message(STATUS "Copying ${_file_count} Init module files to staging")
-            foreach(_f ${_INIT_FILES})
-                get_filename_component(_dir "${_f}" DIRECTORY)
-                file(MAKE_DIRECTORY "${LEAN_OLEAN_STAGING}/${_dir}")
-                file(COPY "${LEAN_OLEAN_SRC}/${_f}" DESTINATION "${LEAN_OLEAN_STAGING}/${_dir}/")
-            endforeach()
-
-            # Embed Init .olean files only via --embed-file (baked into JS).
-            # Std/Lean/Sparkle are too large to embed (~800MB total) and
-            # are instead loaded dynamically at runtime via fetch+FS.writeFile
-            # (see src/pre.js). Their .olean files are installed to the
-            # wasm-host prefix and served as static assets by JupyterLite.
+            # Embed Display + CommBus (small + always-imported) via
+            # --embed-file (baked into the WASM binary).  Std / Lean /
+            # Init / Sparkle / Hesper are dynamic-load (tarballs).
             set(LEAN_OLEAN_STAGING_ROOT "${CMAKE_BINARY_DIR}/olean_staging")
             target_link_options(xlean
                 PUBLIC "SHELL: --embed-file ${LEAN_OLEAN_STAGING_ROOT}@/")
 
-            message(STATUS "Init .olean files will be embedded in WASM filesystem at /lib/lean/")
+            message(STATUS "Display+CommBus .olean files will be embedded; Init lives in the runtime tarball")
 
-            # Std/Lean .olean files are NOT embedded (too large for WASM).
-            # They are copied to a separate directory and installed as
-            # static assets. The JS runtime fetches them on demand and
-            # writes them into the emscripten VFS (see src/pre.js).
+            # Init / Std / Lean .olean files are NOT embedded (too
+            # large for WASM).  They are copied to a separate
+            # directory and installed as static assets.  The JS
+            # runtime fetches them at boot via fetch+FS.writeFile
+            # (see src/post.js) and IndexedDB-caches the parsed
+            # entries so repeat boots are near-instant.
             set(OLEAN_ASSETS_DIR "${CMAKE_BINARY_DIR}/olean_assets/lib/lean")
             file(MAKE_DIRECTORY "${OLEAN_ASSETS_DIR}")
+
+            # Copy Init artifacts (top-level + recursive).  These
+            # used to be embedded via --embed-file but the resulting
+            # 480MB WASM binary was painful to load in the browser;
+            # streaming them in via a tarball lets the same bytes
+            # arrive as compressed data (~70MB) and unpacks just
+            # the entries the kernel actually touches.
+            if(EXISTS "${LEAN_OLEAN_SRC}/Init.olean")
+                foreach(_ext olean olean.server olean.private ir ilean)
+                    if(EXISTS "${LEAN_OLEAN_SRC}/Init.${_ext}")
+                        file(COPY "${LEAN_OLEAN_SRC}/Init.${_ext}" DESTINATION "${OLEAN_ASSETS_DIR}/")
+                    endif()
+                endforeach()
+                file(GLOB_RECURSE _INIT_FILES RELATIVE "${LEAN_OLEAN_SRC}"
+                    "${LEAN_OLEAN_SRC}/Init/*.olean" "${LEAN_OLEAN_SRC}/Init/*.olean.server"
+                    "${LEAN_OLEAN_SRC}/Init/*.olean.private"
+                    "${LEAN_OLEAN_SRC}/Init/*.ir" "${LEAN_OLEAN_SRC}/Init/*.ilean")
+                list(LENGTH _INIT_FILES _init_count)
+                message(STATUS "Init: ${_init_count} files → olean_assets (dynamic load)")
+                foreach(_f ${_INIT_FILES})
+                    get_filename_component(_dir "${_f}" DIRECTORY)
+                    file(MAKE_DIRECTORY "${OLEAN_ASSETS_DIR}/${_dir}")
+                    file(COPY "${LEAN_OLEAN_SRC}/${_f}" DESTINATION "${OLEAN_ASSETS_DIR}/${_dir}/")
+                endforeach()
+            endif()
 
             # Copy Std .olean + .olean.server + .olean.private + .ir + .ilean
             # NOTE: .olean.server is required because Lean's findOLeanParts

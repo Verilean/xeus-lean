@@ -36,9 +36,11 @@ SRC=$(cd "$SRC" && pwd)
 OUT=$(cd "$OUT" && pwd)
 
 # Modules to bundle. Each entry is the module name (= top-level dir name in $SRC).
+# Init lives here too (used to be --embed-file'd into xlean.wasm, now shipped
+# as a tarball alongside Std/Lean for smaller WASM bytes and faster load).
 # Hesper is optional — it's only present when the hesper submodule + WASM build
 # wrapper produced staged oleans (see hesper-wasm/build-wasm.sh).
-MODULES="Std Lean Sparkle Hesper"
+MODULES="Init Std Lean Sparkle Hesper"
 
 # Build manifest as we go.
 MANIFEST_JSON='{"version":"v2","baseUrl":"'"$BASE_URL"'","modules":{'
