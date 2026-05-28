@@ -175,19 +175,25 @@ Module.preRun.push(function () {
     }
   }
 
-  // ---- 4a. IndexedDB cache for parsed entries ---------------------
+  // ---- 4a. IndexedDB cache for compressed tarballs ----------------
   //
   // First-run cost per module:
-  //   network fetch (HTTPS) → fzstd.decompress → parseTar → store
-  // All-but-the-store steps are CPU/network bound and add up to
-  // tens of seconds for Std + Lean.  We persist the *parsed*
-  // entries (filename + Uint8Array body) under a key that pins
-  // the asset name + compressed size, so any rebuild that
-  // changes the tarball naturally invalidates the cache.
+  //   network fetch (HTTPS) → fzstd.decompress → parseTar → write
+  // We cache the *compressed* bytes (the .tar.zst as a single
+  // ArrayBuffer) keyed by asset name + size.  On cache hit we
+  // skip the network round-trip and go straight to decompress +
+  // parse + write.
   //
-  // On cache hit we skip fetch+decompress+parse entirely and go
-  // straight to FS.writeFile — boot is dominated by Wasm
-  // instantiation instead of olean unpacking.
+  // Why not cache the parsed entries?  Earlier revisions stored
+  // the post-parseTar Array<{name, data: Uint8Array}> directly.
+  // Structured-clone of that array forces the browser to copy
+  // every entry's Uint8Array into the IDB transaction buffer at
+  // once.  For Lean that's 1.3 GB of live bytes during put(),
+  // which OOMs in worker contexts.  Storing the raw compressed
+  // blob (~85 MB for Lean, ~370 MB total across all modules)
+  // sidesteps that — one Uint8Array per module, structured-clone
+  // is cheap.  Decompress+parse on the hit path takes a few
+  // seconds, still far better than a fresh network fetch.
   //
   // Worker contexts have IndexedDB (everywhere we care about);
   // if it's not there we just degrade to the original path.
@@ -231,22 +237,26 @@ Module.preRun.push(function () {
     var cacheKey = modName + '|' + info.asset + '|' + info.size;
     var db = await dbPromise;
 
-    var entries = null;
+    // Try the cache first: stored value is the raw compressed
+    // tarball as a Uint8Array (or its underlying ArrayBuffer).
+    var compressed = null;
     if (db) {
       try {
         var cached = await idbGet(db, cacheKey);
-        if (cached && Array.isArray(cached)) {
-          entries = cached;
-          log(modName + ': IDB cache hit (' + entries.length + ' entries)');
+        if (cached instanceof Uint8Array) {
+          compressed = cached;
+        } else if (cached instanceof ArrayBuffer) {
+          compressed = new Uint8Array(cached);
+        }
+        if (compressed) {
+          log(modName + ': IDB cache hit (' + Math.round(compressed.byteLength / 1024 / 1024) + ' MB compressed)');
         }
       } catch (e) { /* fall through to fetch */ }
     }
 
-    if (!entries) {
+    if (!compressed) {
       var url = ASSET_BASE + info.asset;
       log('fetching ' + url + ' (' + Math.round(info.size / 1024 / 1024) + ' MB compressed, ' + info.files + ' files)');
-
-      var compressed;
       try {
         var resp = await fetch(url);
         if (!resp.ok) { log(modName + ': fetch failed status=' + resp.status); return 0; }
@@ -254,23 +264,26 @@ Module.preRun.push(function () {
         compressed = new Uint8Array(ab);
       } catch (e) { log(modName + ': fetch error: ' + e); return 0; }
 
-      var raw;
-      try { raw = fzstd.decompress(compressed); }
-      catch (e) { log(modName + ': decompress error: ' + e); return 0; }
-
-      try { entries = parseTar(raw); }
-      catch (e) { log(modName + ': tar parse error: ' + e); return 0; }
-
-      // Persist parsed entries so the next boot skips the slow path.
+      // Persist the compressed bytes so the next boot skips the
+      // network round-trip.  One Uint8Array per module ≈ tens of
+      // MB — well within structured-clone's comfort zone.
+      // (Storing the *parsed* 7000-entry array directly OOMs the
+      // worker thread for Lean; we did that in an earlier rev.)
       if (db) {
         try {
-          // Structured-clone copies the Uint8Array bodies as ArrayBuffer
-          // segments; just hand the array of {name, data} pairs to IDB.
-          await idbPut(db, cacheKey, entries);
-          log(modName + ': cached to IDB');
+          await idbPut(db, cacheKey, compressed);
+          log(modName + ': cached to IDB (' + Math.round(compressed.byteLength / 1024 / 1024) + ' MB)');
         } catch (e) { log(modName + ': IDB put failed: ' + e); }
       }
     }
+
+    var raw;
+    try { raw = fzstd.decompress(compressed); }
+    catch (e) { log(modName + ': decompress error: ' + e); return 0; }
+
+    var entries;
+    try { entries = parseTar(raw); }
+    catch (e) { log(modName + ': tar parse error: ' + e); return 0; }
 
     var written = 0;
     for (var k = 0; k < entries.length; k++) {
