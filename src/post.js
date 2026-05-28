@@ -240,74 +240,146 @@ Module.preRun.push(function () {
   var dbPromise = openDB().catch(function () { return null; });
 
   // ---- 4b. Fetch + extract one tarball into /lib/lean/ ------------
+  //
+  // Two cache levels.  The "expanded" cache stores the post-
+  // decompress / post-parseTar state — a Blob of the raw tar bytes
+  // plus a compact { names, offsets, lengths } index — keyed under
+  //   modName|asset|size|EXPANDED-V1
+  // On hit we skip both fzstd.decompress (≈9 s for Lean) and tar
+  // parsing entirely.
+  //
+  // Falls back to the "compressed" cache (Blob of the .tar.zst as
+  // shipped) so a partial migration still helps.  And finally
+  // falls back to fetch + decompress + parse + save-to-both.
+  //
+  // Why Blob + sidecar index instead of Array<{name,data}>?
+  // structured-cloning Uint8Array always allocates a fresh
+  // ArrayBuffer per entry, even when 7000 entries share the
+  // same backing buffer.  For Lean that's 1.3 GB → 2 × 1.3 GB
+  // peak during put(), which OOMed the worker.  Storing the raw
+  // bytes in a Blob (file-backed in Chromium) and the metadata
+  // as a tiny JS object sidesteps that — put() copies only the
+  // names + numbers, while the Blob is referenced.
   async function loadModule(modName, info) {
     var cacheKey = modName + '|' + info.asset + '|' + info.size;
+    var expandedKey = cacheKey + '|EXPANDED-V1';
     var db = await dbPromise;
 
-    // Try the cache first: stored value is a Blob holding the
-    // raw compressed tarball.  Blobs are file-backed in Chromium
-    // so reading them back doesn't copy into worker heap.
+    // (A) Try expanded cache first.
+    if (db) {
+      try {
+        var cached = await idbGet(db, expandedKey);
+        if (cached && cached.raw instanceof Blob &&
+            Array.isArray(cached.names) &&
+            cached.offsets instanceof Uint32Array &&
+            cached.lengths instanceof Uint32Array &&
+            cached.names.length === cached.offsets.length) {
+          var tHit = (typeof performance !== 'undefined') ? performance.now() : 0;
+          var ab = await cached.raw.arrayBuffer();
+          var raw = new Uint8Array(ab);
+          var tWrite = (typeof performance !== 'undefined') ? performance.now() : 0;
+          log(modName + ': expanded-cache hit, ' + Math.round(raw.length/1024/1024) + 'MB Blob → AB in ' + Math.round(tWrite - tHit) + 'ms');
+          return writeEntriesFromBuffer(modName, raw, cached.names, cached.offsets, cached.lengths);
+        }
+      } catch (e) { /* fall through */ }
+    }
+
+    // (B) Try compressed-tarball cache.
     var compressed = null;
     if (db) {
       try {
-        var cached = await idbGet(db, cacheKey);
-        var ab = null;
-        if (cached instanceof Blob) {
-          ab = await cached.arrayBuffer();
-        } else if (cached instanceof Uint8Array) {
-          // Compat with the rev that stored Uint8Array directly.
-          ab = cached.buffer;
-        } else if (cached instanceof ArrayBuffer) {
-          ab = cached;
+        var cached2 = await idbGet(db, cacheKey);
+        var ab2 = null;
+        if (cached2 instanceof Blob) ab2 = await cached2.arrayBuffer();
+        else if (cached2 instanceof Uint8Array) ab2 = cached2.buffer;
+        else if (cached2 instanceof ArrayBuffer) ab2 = cached2;
+        if (ab2) {
+          compressed = new Uint8Array(ab2);
+          log(modName + ': compressed-cache hit (' + Math.round(compressed.byteLength / 1024 / 1024) + ' MB)');
         }
-        if (ab) {
-          compressed = new Uint8Array(ab);
-          log(modName + ': IDB cache hit (' + Math.round(compressed.byteLength / 1024 / 1024) + ' MB compressed)');
-        }
-      } catch (e) { /* fall through to fetch */ }
+      } catch (e) { /* fall through */ }
     }
 
+    // (C) Fetch from network if neither cache hit.
+    var compressedBlob = null;
     if (!compressed) {
       var url = ASSET_BASE + info.asset;
       log('fetching ' + url + ' (' + Math.round(info.size / 1024 / 1024) + ' MB compressed, ' + info.files + ' files)');
-      var blob = null;
       try {
         var resp = await fetch(url);
         if (!resp.ok) { log(modName + ': fetch failed status=' + resp.status); return 0; }
-        // Read response body as Blob so we have something we can
-        // hand to IDB without forcing a structured-clone copy of
-        // the underlying bytes.
-        blob = await resp.blob();
-        var fetchAb = await blob.arrayBuffer();
+        compressedBlob = await resp.blob();
+        var fetchAb = await compressedBlob.arrayBuffer();
         compressed = new Uint8Array(fetchAb);
       } catch (e) { log(modName + ': fetch error: ' + e); return 0; }
 
-      // Persist as Blob.  Earlier revs stored Uint8Array directly,
-      // which OOMed on Lean (215 MB): IDB.put() structured-clones
-      // typed arrays into the transaction buffer, doubling worker
-      // memory at the moment of the call.  Blobs in Chromium are
-      // file-backed, so put() registers a reference instead of
-      // copying bytes through the heap.
-      if (db && blob) {
+      if (db && compressedBlob) {
         try {
-          await idbPut(db, cacheKey, blob);
-          log(modName + ': cached to IDB (' + Math.round(blob.size / 1024 / 1024) + ' MB blob)');
-        } catch (e) { log(modName + ': IDB put failed: ' + e); }
+          await idbPut(db, cacheKey, compressedBlob);
+          log(modName + ': cached compressed Blob (' + Math.round(compressedBlob.size / 1024 / 1024) + ' MB)');
+        } catch (e) { log(modName + ': IDB put (compressed) failed: ' + e); }
       }
     }
 
     var tDecompress = (typeof performance !== 'undefined') ? performance.now() : 0;
-    var raw;
-    try { raw = fzstd.decompress(compressed); }
+    var raw2;
+    try { raw2 = fzstd.decompress(compressed); }
     catch (e) { log(modName + ': decompress error: ' + e); return 0; }
     var tParse = (typeof performance !== 'undefined') ? performance.now() : 0;
-    log(modName + ': decompressed ' + Math.round(raw.length/1024/1024) + 'MB in ' + Math.round(tParse - tDecompress) + 'ms');
+    log(modName + ': decompressed ' + Math.round(raw2.length/1024/1024) + 'MB in ' + Math.round(tParse - tDecompress) + 'ms');
 
     var entries;
-    try { entries = parseTar(raw); }
+    try { entries = parseTar(raw2); }
     catch (e) { log(modName + ': tar parse error: ' + e); return 0; }
+    var tWriteStart = (typeof performance !== 'undefined') ? performance.now() : 0;
+    log(modName + ': parsed ' + entries.length + ' entries in ' + Math.round(tWriteStart - tParse) + 'ms');
+
+    // (D) Save expanded cache.  Slice the entry list into three
+    // parallel arrays so structured-clone only copies the JS
+    // metadata (~hundreds of KB) and registers the Blob by
+    // reference.
+    if (db) {
+      try {
+        var names = new Array(entries.length);
+        var offsets = new Uint32Array(entries.length);
+        var lengths = new Uint32Array(entries.length);
+        for (var ei = 0; ei < entries.length; ei++) {
+          names[ei] = entries[ei].name;
+          offsets[ei] = entries[ei].data.byteOffset - raw2.byteOffset;
+          lengths[ei] = entries[ei].data.byteLength;
+        }
+        // raw2 wraps a buffer that may also hold tar padding past
+        // the last entry; trim to (last offset + last length) to
+        // keep the Blob compact.
+        var lastEnd = entries.length > 0
+          ? offsets[entries.length - 1] + lengths[entries.length - 1]
+          : raw2.byteLength;
+        var rawSlice = raw2.subarray(0, lastEnd);
+        var rawBlob = new Blob([rawSlice]);
+        await idbPut(db, expandedKey, {
+          raw: rawBlob, names: names, offsets: offsets, lengths: lengths,
+        });
+        log(modName + ': cached expanded ('
+          + Math.round(rawBlob.size/1024/1024) + ' MB blob + '
+          + entries.length + ' entries)');
+      } catch (e) { log(modName + ': IDB put (expanded) failed: ' + e); }
+    }
+
+    // Hand off to the same writer used by the expanded-cache path.
+    var namesArr = new Array(entries.length);
+    var offsetsArr = new Uint32Array(entries.length);
+    var lengthsArr = new Uint32Array(entries.length);
+    for (var ej = 0; ej < entries.length; ej++) {
+      namesArr[ej] = entries[ej].name;
+      offsetsArr[ej] = entries[ej].data.byteOffset - raw2.byteOffset;
+      lengthsArr[ej] = entries[ej].data.byteLength;
+    }
+    return writeEntriesFromBuffer(modName, raw2, namesArr, offsetsArr, lengthsArr);
+  }
+
+  // VFS write path used by both cache hit and fresh-decompress.
+  function writeEntriesFromBuffer(modName, raw, names, offsets, lengths) {
     var tWrite = (typeof performance !== 'undefined') ? performance.now() : 0;
-    log(modName + ': parsed ' + entries.length + ' entries in ' + Math.round(tWrite - tParse) + 'ms');
 
     // ---- 4c. Write entries to MEMFS --------------------------------
     //
@@ -345,15 +417,18 @@ Module.preRun.push(function () {
     }
 
     var written = 0;
-    for (var k = 0; k < entries.length; k++) {
-      var e = entries[k];
-      if (!e.name) continue;
-      var slash = e.name.lastIndexOf('/');
-      var dir = slash > 0 ? '/lib/lean/' + e.name.substring(0, slash) : '/lib/lean';
-      var base = slash > 0 ? e.name.substring(slash + 1) : e.name;
+    var n = names.length;
+    for (var k = 0; k < n; k++) {
+      var name = names[k];
+      if (!name) continue;
+      var off = offsets[k];
+      var len = lengths[k];
+      var slash = name.lastIndexOf('/');
+      var dir = slash > 0 ? '/lib/lean/' + name.substring(0, slash) : '/lib/lean';
+      var base = slash > 0 ? name.substring(slash + 1) : name;
       ensureDir(dir);
       try {
-        FS.createDataFile(dir, base, e.data, true, false, true);
+        FS.createDataFile(dir, base, raw.subarray(off, off + len), true, false, true);
         written++;
       } catch (err) {
         // Likely EEXIST (a previous load wrote this path).  Skip.
@@ -361,7 +436,7 @@ Module.preRun.push(function () {
     }
     var tDone = (typeof performance !== 'undefined') ? performance.now() : 0;
     log(modName + ': VFS write ' + written + ' files in ' + Math.round(tDone - tWrite) + 'ms');
-    log(modName + ': wrote ' + written + ' / ' + entries.length + ' files to /lib/lean/');
+    log(modName + ': wrote ' + written + ' / ' + n + ' files to /lib/lean/');
     return written;
   }
 
