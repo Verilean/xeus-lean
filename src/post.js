@@ -237,18 +237,24 @@ Module.preRun.push(function () {
     var cacheKey = modName + '|' + info.asset + '|' + info.size;
     var db = await dbPromise;
 
-    // Try the cache first: stored value is the raw compressed
-    // tarball as a Uint8Array (or its underlying ArrayBuffer).
+    // Try the cache first: stored value is a Blob holding the
+    // raw compressed tarball.  Blobs are file-backed in Chromium
+    // so reading them back doesn't copy into worker heap.
     var compressed = null;
     if (db) {
       try {
         var cached = await idbGet(db, cacheKey);
-        if (cached instanceof Uint8Array) {
-          compressed = cached;
+        var ab = null;
+        if (cached instanceof Blob) {
+          ab = await cached.arrayBuffer();
+        } else if (cached instanceof Uint8Array) {
+          // Compat with the rev that stored Uint8Array directly.
+          ab = cached.buffer;
         } else if (cached instanceof ArrayBuffer) {
-          compressed = new Uint8Array(cached);
+          ab = cached;
         }
-        if (compressed) {
+        if (ab) {
+          compressed = new Uint8Array(ab);
           log(modName + ': IDB cache hit (' + Math.round(compressed.byteLength / 1024 / 1024) + ' MB compressed)');
         }
       } catch (e) { /* fall through to fetch */ }
@@ -257,22 +263,28 @@ Module.preRun.push(function () {
     if (!compressed) {
       var url = ASSET_BASE + info.asset;
       log('fetching ' + url + ' (' + Math.round(info.size / 1024 / 1024) + ' MB compressed, ' + info.files + ' files)');
+      var blob = null;
       try {
         var resp = await fetch(url);
         if (!resp.ok) { log(modName + ': fetch failed status=' + resp.status); return 0; }
-        var ab = await resp.arrayBuffer();
-        compressed = new Uint8Array(ab);
+        // Read response body as Blob so we have something we can
+        // hand to IDB without forcing a structured-clone copy of
+        // the underlying bytes.
+        blob = await resp.blob();
+        var fetchAb = await blob.arrayBuffer();
+        compressed = new Uint8Array(fetchAb);
       } catch (e) { log(modName + ': fetch error: ' + e); return 0; }
 
-      // Persist the compressed bytes so the next boot skips the
-      // network round-trip.  One Uint8Array per module ≈ tens of
-      // MB — well within structured-clone's comfort zone.
-      // (Storing the *parsed* 7000-entry array directly OOMs the
-      // worker thread for Lean; we did that in an earlier rev.)
-      if (db) {
+      // Persist as Blob.  Earlier revs stored Uint8Array directly,
+      // which OOMed on Lean (215 MB): IDB.put() structured-clones
+      // typed arrays into the transaction buffer, doubling worker
+      // memory at the moment of the call.  Blobs in Chromium are
+      // file-backed, so put() registers a reference instead of
+      // copying bytes through the heap.
+      if (db && blob) {
         try {
-          await idbPut(db, cacheKey, compressed);
-          log(modName + ': cached to IDB (' + Math.round(compressed.byteLength / 1024 / 1024) + ' MB)');
+          await idbPut(db, cacheKey, blob);
+          log(modName + ': cached to IDB (' + Math.round(blob.size / 1024 / 1024) + ' MB blob)');
         } catch (e) { log(modName + ': IDB put failed: ' + e); }
       }
     }
@@ -303,18 +315,21 @@ Module.preRun.push(function () {
   }
 
   // ---- 5. Eagerly load every module in the manifest ---------------
-  // Parallelise: fetch+decompress is CPU/network bound so several
-  // workers can overlap.  VFS writes are serialised inside loadModule
-  // via the per-module await.  Total wall-clock drops roughly with
-  // the number of modules (Std/Lean/Sparkle/Hesper run in parallel).
+  // Sequential, not parallel.  Earlier revs ran Promise.all over
+  // every module to overlap fetch + decompress, but the peak
+  // working-set under parallel load was several hundred MB of
+  // tarball buffers + decompressed entries all live at once,
+  // which OOMed the worker on Lean.  Doing them in series keeps
+  // the high-water mark at "one module at a time" — Lean alone
+  // (215 MB compressed → 1.3 GB decompressed) is already the
+  // worst case.
   var modNames = Object.keys(MANIFEST.modules);
-  var results = await Promise.all(modNames.map(function (mod) {
-    return (async function () {
-      try { return await loadModule(mod, MANIFEST.modules[mod]); }
-      catch (e) { log(mod + ': load threw: ' + e); return 0; }
-    })();
-  }));
-  var totalWritten = results.reduce(function (a, b) { return a + b; }, 0);
+  var totalWritten = 0;
+  for (var mi = 0; mi < modNames.length; mi++) {
+    var mod = modNames[mi];
+    try { totalWritten += await loadModule(mod, MANIFEST.modules[mod]); }
+    catch (e) { log(mod + ': load threw: ' + e); }
+  }
   log('done — ' + totalWritten + ' files written across ' + modNames.length + ' modules');
     Module.removeRunDependency(depTag);
   })().catch(function (err) {
