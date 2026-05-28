@@ -308,59 +308,19 @@ std::string interpreter::call_lean_repl(const std::string& code, int env)
 void interpreter::configure_impl()
 {
     std::cerr << "[WASM] configure_impl: ENTER" << std::endl;
-
-#ifdef __EMSCRIPTEN__
-    // Register lazy .olean files from the manifest served alongside
-    // the kernel. This MUST happen from C++ because --post-js code
-    // does not execute in JupyterLite's Web Worker context.
-    // Use emscripten_run_script_int which takes a C string — avoids
-    // EM_ASM macro parsing issues with JavaScript syntax.
-    int registered = emscripten_run_script_int(
-        "var candidates = ['/xeus/wasm-host/olean/', './olean/', '../olean/'];"
-        "try { if (scriptDirectory) candidates.unshift(scriptDirectory + '../olean/'); } catch(e) {}"
-        "var baseUrl = '';"
-        "for (var i = 0; i < candidates.length; i++) {"
-        "  try {"
-        "    var xhr = new XMLHttpRequest();"
-        "    xhr.open('GET', candidates[i] + 'manifest.json', false);"
-        "    xhr.send();"
-        "    if (xhr.status === 200) { baseUrl = candidates[i]; break; }"
-        "  } catch(e) {}"
-        "}"
-        "if (!baseUrl) { 0; } else {"
-        "  try {"
-        "    var xhr2 = new XMLHttpRequest();"
-        "    xhr2.open('GET', baseUrl + 'manifest.json', false);"
-        "    xhr2.send();"
-        "    var manifest = JSON.parse(xhr2.responseText);"
-        "    var count = 0;"
-        "    for (var i = 0; i < manifest.length; i++) {"
-        "      var relPath = manifest[i];"
-        "      var pp = relPath.split('/');"
-        "      var dir = '/lib/lean';"
-        "      for (var j = 0; j < pp.length - 1; j++) {"
-        "        dir += '/' + pp[j];"
-        "        try { FS.mkdir(dir); } catch(e) {}"
-        "      }"
-        "      try {"
-        "        var xhr3 = new XMLHttpRequest();"
-        "        xhr3.open('GET', baseUrl + relPath, false);"
-        "        xhr3.responseType = 'arraybuffer';"
-        "        xhr3.send();"
-        "        if (xhr3.status === 200) {"
-        "          var bytes = new Uint8Array(xhr3.response);"
-        "          FS.writeFile(dir + '/' + pp[pp.length-1], bytes);"
-        "          count++;"
-        "        }"
-        "      } catch(e) {}"
-        "    }"
-        "    count;"
-        "  } catch(e) { -1; }"
-        "}"
-    );
-    std::cerr << "[WASM] Registered " << registered << " lazy .olean files" << std::endl;
-#endif
-
+    // Olean loading used to live here as an embedded EM_ASM block
+    // that fetched `manifest.json` (v1, one entry per file) over
+    // synchronous XMLHttpRequest.  Synchronous XHR fails silently
+    // from inside a Web Worker on JupyterLite's service-worker
+    // setup, so the loader was already a no-op in production —
+    // it just spammed 404s for `manifest.json` at /xeus/wasm-host
+    // / extensions/@jupyterlite/xeus-extension/ etc.
+    //
+    // The real loader is now in src/post.js: async fetch of
+    // `manifest-v2.json` + per-module tarballs, with an IndexedDB
+    // cache.  That runs in `Module.preRun` and blocks WASM main()
+    // via `addRunDependency`, so by the time we get here the VFS
+    // already has every Init/Std/Lean/Sparkle/Hesper olean.
     test_hash_tables();
     initialize_lean_runtime();
     std::cerr << "[WASM] configure_impl: EXIT" << std::endl;
