@@ -175,26 +175,102 @@ Module.preRun.push(function () {
     }
   }
 
-  // ---- 4. Fetch + extract one tarball into /lib/lean/ -------------
+  // ---- 4a. IndexedDB cache for parsed entries ---------------------
+  //
+  // First-run cost per module:
+  //   network fetch (HTTPS) → fzstd.decompress → parseTar → store
+  // All-but-the-store steps are CPU/network bound and add up to
+  // tens of seconds for Std + Lean.  We persist the *parsed*
+  // entries (filename + Uint8Array body) under a key that pins
+  // the asset name + compressed size, so any rebuild that
+  // changes the tarball naturally invalidates the cache.
+  //
+  // On cache hit we skip fetch+decompress+parse entirely and go
+  // straight to FS.writeFile — boot is dominated by Wasm
+  // instantiation instead of olean unpacking.
+  //
+  // Worker contexts have IndexedDB (everywhere we care about);
+  // if it's not there we just degrade to the original path.
+  var DB_NAME = 'xlean-olean-cache';
+  var DB_VERSION = 1;
+  var STORE = 'modules';
+
+  function openDB() {
+    return new Promise(function (resolve, reject) {
+      if (typeof indexedDB === 'undefined') { reject(new Error('no IDB')); return; }
+      var req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = function (ev) {
+        var db = ev.target.result;
+        if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
+      };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror   = function () { reject(req.error); };
+    });
+  }
+  function idbGet(db, key) {
+    return new Promise(function (resolve, reject) {
+      var tx = db.transaction(STORE, 'readonly');
+      var rq = tx.objectStore(STORE).get(key);
+      rq.onsuccess = function () { resolve(rq.result); };
+      rq.onerror   = function () { reject(rq.error); };
+    });
+  }
+  function idbPut(db, key, val) {
+    return new Promise(function (resolve, reject) {
+      var tx = db.transaction(STORE, 'readwrite');
+      var rq = tx.objectStore(STORE).put(val, key);
+      rq.onsuccess = function () { resolve(); };
+      rq.onerror   = function () { reject(rq.error); };
+    });
+  }
+
+  var dbPromise = openDB().catch(function () { return null; });
+
+  // ---- 4b. Fetch + extract one tarball into /lib/lean/ ------------
   async function loadModule(modName, info) {
-    var url = ASSET_BASE + info.asset;
-    log('fetching ' + url + ' (' + Math.round(info.size / 1024 / 1024) + ' MB compressed, ' + info.files + ' files)');
+    var cacheKey = modName + '|' + info.asset + '|' + info.size;
+    var db = await dbPromise;
 
-    var compressed;
-    try {
-      var resp = await fetch(url);
-      if (!resp.ok) { log(modName + ': fetch failed status=' + resp.status); return 0; }
-      var ab = await resp.arrayBuffer();
-      compressed = new Uint8Array(ab);
-    } catch (e) { log(modName + ': fetch error: ' + e); return 0; }
+    var entries = null;
+    if (db) {
+      try {
+        var cached = await idbGet(db, cacheKey);
+        if (cached && Array.isArray(cached)) {
+          entries = cached;
+          log(modName + ': IDB cache hit (' + entries.length + ' entries)');
+        }
+      } catch (e) { /* fall through to fetch */ }
+    }
 
-    var raw;
-    try { raw = fzstd.decompress(compressed); }
-    catch (e) { log(modName + ': decompress error: ' + e); return 0; }
+    if (!entries) {
+      var url = ASSET_BASE + info.asset;
+      log('fetching ' + url + ' (' + Math.round(info.size / 1024 / 1024) + ' MB compressed, ' + info.files + ' files)');
 
-    var entries;
-    try { entries = parseTar(raw); }
-    catch (e) { log(modName + ': tar parse error: ' + e); return 0; }
+      var compressed;
+      try {
+        var resp = await fetch(url);
+        if (!resp.ok) { log(modName + ': fetch failed status=' + resp.status); return 0; }
+        var ab = await resp.arrayBuffer();
+        compressed = new Uint8Array(ab);
+      } catch (e) { log(modName + ': fetch error: ' + e); return 0; }
+
+      var raw;
+      try { raw = fzstd.decompress(compressed); }
+      catch (e) { log(modName + ': decompress error: ' + e); return 0; }
+
+      try { entries = parseTar(raw); }
+      catch (e) { log(modName + ': tar parse error: ' + e); return 0; }
+
+      // Persist parsed entries so the next boot skips the slow path.
+      if (db) {
+        try {
+          // Structured-clone copies the Uint8Array bodies as ArrayBuffer
+          // segments; just hand the array of {name, data} pairs to IDB.
+          await idbPut(db, cacheKey, entries);
+          log(modName + ': cached to IDB');
+        } catch (e) { log(modName + ': IDB put failed: ' + e); }
+      }
+    }
 
     var written = 0;
     for (var k = 0; k < entries.length; k++) {
@@ -214,14 +290,19 @@ Module.preRun.push(function () {
   }
 
   // ---- 5. Eagerly load every module in the manifest ---------------
-  var totalWritten = 0;
-  for (var mod in MANIFEST.modules) {
-    if (Object.prototype.hasOwnProperty.call(MANIFEST.modules, mod)) {
-      try { totalWritten += await loadModule(mod, MANIFEST.modules[mod]); }
-      catch(e) { log(mod + ': load threw: ' + e); }
-    }
-  }
-  log('done — ' + totalWritten + ' files written across ' + Object.keys(MANIFEST.modules).length + ' modules');
+  // Parallelise: fetch+decompress is CPU/network bound so several
+  // workers can overlap.  VFS writes are serialised inside loadModule
+  // via the per-module await.  Total wall-clock drops roughly with
+  // the number of modules (Std/Lean/Sparkle/Hesper run in parallel).
+  var modNames = Object.keys(MANIFEST.modules);
+  var results = await Promise.all(modNames.map(function (mod) {
+    return (async function () {
+      try { return await loadModule(mod, MANIFEST.modules[mod]); }
+      catch (e) { log(mod + ': load threw: ' + e); return 0; }
+    })();
+  }));
+  var totalWritten = results.reduce(function (a, b) { return a + b; }, 0);
+  log('done — ' + totalWritten + ' files written across ' + modNames.length + ' modules');
     Module.removeRunDependency(depTag);
   })().catch(function (err) {
     log('loadOleans crashed: ' + err);
