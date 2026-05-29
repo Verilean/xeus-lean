@@ -384,41 +384,55 @@ Module.preRun.push(function () {
       lengthsArr[ei] = entries[ei].data.byteLength;
     }
 
-    // (D) Save expanded cache — fire-and-forget.  We don't await
-    // this: a fresh cold boot has nothing to gain from blocking
-    // the kernel on the write, and the *next* boot will simply
-    // re-fetch and re-expand if this one didn't finish.  Wrapping
-    // in queueMicrotask defers the put past the current synchronous
-    // continuation so the VFS write below can run unblocked.
+    // (D) Save expanded cache.
     //
-    // Module._xleanSkipExpandedCache is set by loadManifestAsync()
-    // when a bundle (Mathlib) is being loaded that would otherwise
-    // run the worker out of JS heap: each Blob we queue here holds
-    // ~100-150 MB resident until IDB commit, and 32 chunks back-to-
-    // back hit Chrome's ~4 GB renderer cap.  Skipping the cache
-    // means a re-load on the next boot, but a working load now.
-    if (db && !Module._xleanSkipExpandedCache) {
+    // Default mode (startup loader for Init/Std/Lean/Sparkle):
+    // fire-and-forget via queueMicrotask, so the VFS write below
+    // doesn't block on the IDB commit.  Cold boot finishes faster;
+    // the put settles in background.
+    //
+    // Sync mode (Module._xleanSyncExpandedCache, set by
+    // loadManifestAsync for %load mathlib): await the put before
+    // returning.  Mathlib is 32+ chunks back-to-back; firing all
+    // of them in microtasks pins 32 Blobs in worker memory until
+    // they all commit, which blows past Chrome's ~3.76 GB jsHeap-
+    // SizeLimit at chunk ~18.  Awaiting per chunk means at most one
+    // Blob is resident at a time and the next fetch can allocate.
+    if (db) {
       var lastEnd = entries.length > 0
         ? offsetsArr[entries.length - 1] + lengthsArr[entries.length - 1]
         : raw2.byteLength;
       var rawBlob = new Blob([raw2.subarray(0, lastEnd)]);
-      var namesForCache = namesArr;
-      var offsetsForCache = offsetsArr;
-      var lengthsForCache = lengthsArr;
-      queueMicrotask(function () {
-        idbPut(db, expandedKey, {
-          raw: rawBlob,
-          names: namesForCache,
-          offsets: offsetsForCache,
-          lengths: lengthsForCache,
-        }).then(function () {
+      var cacheEntry = {
+        raw: rawBlob,
+        names: namesArr,
+        offsets: offsetsArr,
+        lengths: lengthsArr,
+      };
+      if (Module._xleanSyncExpandedCache) {
+        try {
+          await idbPut(db, expandedKey, cacheEntry);
           log(modName + ': cached expanded ('
             + Math.round(rawBlob.size/1024/1024) + ' MB blob + '
             + entries.length + ' entries)');
-        }, function (e) {
-          log(modName + ': IDB put (expanded) failed: ' + e);
+        } catch (e) {
+          log(modName + ': IDB put (expanded, sync) failed: ' + e);
+        }
+        // Drop our local strong refs so the Blob/sidecar can be
+        // collected before the next chunk's fetch+decompress.
+        rawBlob = null;
+        cacheEntry = null;
+      } else {
+        queueMicrotask(function () {
+          idbPut(db, expandedKey, cacheEntry).then(function () {
+            log(modName + ': cached expanded ('
+              + Math.round(rawBlob.size/1024/1024) + ' MB blob + '
+              + entries.length + ' entries)');
+          }, function (e) {
+            log(modName + ': IDB put (expanded) failed: ' + e);
+          });
         });
-      });
+      }
     }
 
     return writeEntriesFromBuffer(modName, raw2, namesArr, offsetsArr, lengthsArr);
@@ -522,12 +536,12 @@ Module.preRun.push(function () {
   Module.loadManifestAsync = async function (manifestUrl, opts) {
     opts = opts || {};
     var onProgress = opts.onProgress || function () {};
-    // Don't write per-chunk expanded caches during this load: see
-    // (D) above.  The trade-off is that the next %load mathlib in
-    // a fresh tab pays the full fetch+decompress cost again, but at
-    // least the *current* load actually finishes instead of falling
-    // off Chrome's renderer memory cliff at chunk ~18.
-    Module._xleanSkipExpandedCache = true;
+    // Use sync expanded-cache writes for this load: see (D) above
+    // in loadModule().  Mathlib's 32 chunks back-to-back overrun the
+    // worker's jsHeapSizeLimit if we keep all the in-flight Blobs
+    // pinned via queueMicrotask, so we commit each chunk to IDB and
+    // release its Blob ref before starting the next fetch.
+    Module._xleanSyncExpandedCache = true;
     var url, baseForAssets;
     if (/^(https?:)?\/\//.test(manifestUrl) || manifestUrl.startsWith('/')) {
       url = manifestUrl;
@@ -565,7 +579,7 @@ Module.preRun.push(function () {
       }
     }
     onProgress('done', { written: written, modules: names.length });
-    Module._xleanSkipExpandedCache = false;
+    Module._xleanSyncExpandedCache = false;
     return { written: written, modules: names };
   };
 
