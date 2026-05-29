@@ -138,10 +138,37 @@ Module.preRun.push(function () {
       return;
     }
 
-    if (typeof fzstd === 'undefined' || typeof fzstd.decompress !== 'function') {
-      log('fzstd not loaded — cannot decompress tarballs (skipping)');
+    // Browsers that support DecompressionStream('zstd') (Chrome
+    // 123+, Edge, etc.) hand decompression off to the native zstd
+    // implementation — ~5x faster than fzstd's pure-JS port on
+    // typical Lean tarballs.  fzstd stays as a fallback for older
+    // browsers and Firefox until it ships zstd support.
+    var hasNativeZstd = false;
+    try {
+      if (typeof DecompressionStream === 'function') {
+        // Construct one to verify 'zstd' is in the supported format
+        // list; older browsers throw TypeError for unknown formats.
+        new DecompressionStream('zstd');
+        hasNativeZstd = true;
+      }
+    } catch (_) { hasNativeZstd = false; }
+
+    var hasFzstd = typeof fzstd !== 'undefined' && typeof fzstd.decompress === 'function';
+    if (!hasNativeZstd && !hasFzstd) {
+      log('no zstd decoder available (no DecompressionStream and no fzstd) — skipping');
       Module.removeRunDependency(depTag);
       return;
+    }
+    log('zstd decoder: ' + (hasNativeZstd ? 'native DecompressionStream' : 'fzstd (pure JS)'));
+
+    async function decompressZstd(compressed) {
+      if (hasNativeZstd) {
+        var ds = new DecompressionStream('zstd');
+        var resp = new Response(new Blob([compressed]).stream().pipeThrough(ds));
+        var ab = await resp.arrayBuffer();
+        return new Uint8Array(ab);
+      }
+      return fzstd.decompress(compressed);
     }
 
     var ASSET_BASE = MANIFEST.baseUrl || BASE;
@@ -185,7 +212,7 @@ Module.preRun.push(function () {
   // ---- 4a. IndexedDB cache for compressed tarballs ----------------
   //
   // First-run cost per module:
-  //   network fetch (HTTPS) → fzstd.decompress → parseTar → write
+  //   network fetch (HTTPS) → zstd decompress → parseTar → write
   // We cache the *compressed* bytes (the .tar.zst as a single
   // ArrayBuffer) keyed by asset name + size.  On cache hit we
   // skip the network round-trip and go straight to decompress +
@@ -252,7 +279,7 @@ Module.preRun.push(function () {
   // decompress / post-parseTar state — a Blob of the raw tar bytes
   // plus a compact { names, offsets, lengths } index — keyed under
   //   modName|asset|size|EXPANDED-V1
-  // On hit we skip both fzstd.decompress (≈9 s for Lean) and tar
+  // On hit we skip both zstd decompress (≈9 s for Lean) and tar
   // parsing entirely.
   //
   // Falls back to the "compressed" cache (Blob of the .tar.zst as
@@ -335,7 +362,7 @@ Module.preRun.push(function () {
 
     var tDecompress = (typeof performance !== 'undefined') ? performance.now() : 0;
     var raw2;
-    try { raw2 = fzstd.decompress(compressed); }
+    try { raw2 = await decompressZstd(compressed); }
     catch (e) { log(modName + ': decompress error: ' + e); return 0; }
     var tParse = (typeof performance !== 'undefined') ? performance.now() : 0;
     log(modName + ': decompressed ' + Math.round(raw2.length/1024/1024) + 'MB in ' + Math.round(tParse - tDecompress) + 'ms');
