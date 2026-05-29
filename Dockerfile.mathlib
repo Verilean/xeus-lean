@@ -35,7 +35,14 @@ WORKDIR /work
 # A tiny "bundle" package that requires Mathlib.  Lake will fetch
 # Mathlib + its transitive deps (Aesop, Batteries, ImportGraph,
 # ProofWidgets, Plausible, Qq) and build them all.
-RUN echo "${LEAN_VERSION}" > lean-toolchain
+#
+# IMPORTANT: lean-toolchain format must match what Mathlib's
+# lean-toolchain file contains *byte-for-byte*, otherwise the
+# mathlib-cache post-update hook refuses to fetch:
+#   "Dependency Mathlib uses a different lean-toolchain"
+# Mathlib ships `leanprover/lean4:v4.28.0`, not bare `v4.28.0`,
+# so we write the full toolchain string here.
+RUN echo "leanprover/lean4:${LEAN_VERSION}" > lean-toolchain
 RUN cat > lakefile.toml <<EOF
 name = "mathlib-bundle"
 defaultTargets = ["MathlibBundle"]
