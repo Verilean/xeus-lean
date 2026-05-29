@@ -352,12 +352,12 @@ Module.preRun.push(function () {
         compressed = new Uint8Array(fetchAb);
       } catch (e) { log(modName + ': fetch error: ' + e); return 0; }
 
-      if (db && compressedBlob) {
-        try {
-          await idbPut(db, cacheKey, compressedBlob);
-          log(modName + ': cached compressed Blob (' + Math.round(compressedBlob.size / 1024 / 1024) + ' MB)');
-        } catch (e) { log(modName + ': IDB put (compressed) failed: ' + e); }
-      }
+      // Note: we used to write the compressed tarball to IDB here,
+      // but the expanded cache (see (D) below) supersedes it on warm
+      // boot — the only path that ever reads the compressed cache
+      // is a partial migration from an older xeus-lean build, which
+      // we don't need to optimize.  Skipping the put saves ~3 s of
+      // cold-boot wall clock (one ~200 MB Blob commit per module).
     }
 
     var tDecompress = (typeof performance !== 'undefined') ? performance.now() : 0;
@@ -373,46 +373,47 @@ Module.preRun.push(function () {
     var tWriteStart = (typeof performance !== 'undefined') ? performance.now() : 0;
     log(modName + ': parsed ' + entries.length + ' entries in ' + Math.round(tWriteStart - tParse) + 'ms');
 
-    // (D) Save expanded cache.  Slice the entry list into three
-    // parallel arrays so structured-clone only copies the JS
-    // metadata (~hundreds of KB) and registers the Blob by
-    // reference.
-    if (db) {
-      try {
-        var names = new Array(entries.length);
-        var offsets = new Uint32Array(entries.length);
-        var lengths = new Uint32Array(entries.length);
-        for (var ei = 0; ei < entries.length; ei++) {
-          names[ei] = entries[ei].name;
-          offsets[ei] = entries[ei].data.byteOffset - raw2.byteOffset;
-          lengths[ei] = entries[ei].data.byteLength;
-        }
-        // raw2 wraps a buffer that may also hold tar padding past
-        // the last entry; trim to (last offset + last length) to
-        // keep the Blob compact.
-        var lastEnd = entries.length > 0
-          ? offsets[entries.length - 1] + lengths[entries.length - 1]
-          : raw2.byteLength;
-        var rawSlice = raw2.subarray(0, lastEnd);
-        var rawBlob = new Blob([rawSlice]);
-        await idbPut(db, expandedKey, {
-          raw: rawBlob, names: names, offsets: offsets, lengths: lengths,
-        });
-        log(modName + ': cached expanded ('
-          + Math.round(rawBlob.size/1024/1024) + ' MB blob + '
-          + entries.length + ' entries)');
-      } catch (e) { log(modName + ': IDB put (expanded) failed: ' + e); }
-    }
-
-    // Hand off to the same writer used by the expanded-cache path.
+    // Build the parallel-array form once — both the VFS write and
+    // the (deferred) expanded-cache write consume it.
     var namesArr = new Array(entries.length);
     var offsetsArr = new Uint32Array(entries.length);
     var lengthsArr = new Uint32Array(entries.length);
-    for (var ej = 0; ej < entries.length; ej++) {
-      namesArr[ej] = entries[ej].name;
-      offsetsArr[ej] = entries[ej].data.byteOffset - raw2.byteOffset;
-      lengthsArr[ej] = entries[ej].data.byteLength;
+    for (var ei = 0; ei < entries.length; ei++) {
+      namesArr[ei] = entries[ei].name;
+      offsetsArr[ei] = entries[ei].data.byteOffset - raw2.byteOffset;
+      lengthsArr[ei] = entries[ei].data.byteLength;
     }
+
+    // (D) Save expanded cache — fire-and-forget.  We don't await
+    // this: a fresh cold boot has nothing to gain from blocking
+    // the kernel on the write, and the *next* boot will simply
+    // re-fetch and re-expand if this one didn't finish.  Wrapping
+    // in queueMicrotask defers the put past the current synchronous
+    // continuation so the VFS write below can run unblocked.
+    if (db) {
+      var lastEnd = entries.length > 0
+        ? offsetsArr[entries.length - 1] + lengthsArr[entries.length - 1]
+        : raw2.byteLength;
+      var rawBlob = new Blob([raw2.subarray(0, lastEnd)]);
+      var namesForCache = namesArr;
+      var offsetsForCache = offsetsArr;
+      var lengthsForCache = lengthsArr;
+      queueMicrotask(function () {
+        idbPut(db, expandedKey, {
+          raw: rawBlob,
+          names: namesForCache,
+          offsets: offsetsForCache,
+          lengths: lengthsForCache,
+        }).then(function () {
+          log(modName + ': cached expanded ('
+            + Math.round(rawBlob.size/1024/1024) + ' MB blob + '
+            + entries.length + ' entries)');
+        }, function (e) {
+          log(modName + ': IDB put (expanded) failed: ' + e);
+        });
+      });
+    }
+
     return writeEntriesFromBuffer(modName, raw2, namesArr, offsetsArr, lengthsArr);
   }
 
