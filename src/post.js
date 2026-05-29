@@ -497,6 +497,64 @@ Module.preRun.push(function () {
     catch (e) { log(mod + ': load threw: ' + e); }
   }
   log('done — ' + totalWritten + ' files written across ' + modNames.length + ' modules');
+
+  // ---- 6. Expose a runtime loader for extra manifests -------------
+  //
+  // Used by `%load <name>` cell magic.  The startup loader above
+  // pulled `manifest-v2.json` (Init/Std/Lean/Sparkle) from the
+  // resolved BASE; additional bundles (Mathlib, etc.) live next to
+  // it as `manifest-<name>.json` and are loaded on demand.
+  //
+  // Resolution rule: if `manifestUrl` is absolute (starts with
+  // http:// or https:// or /), use it as-is.  Otherwise treat it
+  // as a manifest *name* (e.g. "mathlib") and fetch
+  // `<BASE>manifest-<name>.json`.
+  //
+  // opts.onProgress(stage, info) is called between stages so callers
+  // (the cell magic, ultimately) can stream a human-readable log.
+  Module.loadManifestAsync = async function (manifestUrl, opts) {
+    opts = opts || {};
+    var onProgress = opts.onProgress || function () {};
+    var url, baseForAssets;
+    if (/^(https?:)?\/\//.test(manifestUrl) || manifestUrl.startsWith('/')) {
+      url = manifestUrl;
+      var slash = url.lastIndexOf('/');
+      baseForAssets = slash >= 0 ? url.substring(0, slash + 1) : BASE;
+    } else {
+      url = BASE + 'manifest-' + manifestUrl + '.json';
+      baseForAssets = BASE;
+    }
+    onProgress('fetching-manifest', { url: url });
+    var resp = await fetch(url);
+    if (!resp.ok) throw new Error('manifest fetch failed: ' + resp.status + ' ' + url);
+    var manifest = await resp.json();
+    var mods = manifest.modules || {};
+    var names = Object.keys(mods);
+    var assetBase = manifest.baseUrl || baseForAssets;
+    var written = 0;
+    for (var ni = 0; ni < names.length; ni++) {
+      var name = names[ni];
+      onProgress('loading-module', {
+        name: name, index: ni, total: names.length, info: mods[name],
+      });
+      // loadModule() reads ASSET_BASE from its enclosing scope, which
+      // points at the startup manifest's location.  For an on-demand
+      // load we may need a different base, so swap it for the call
+      // and restore after.  This is a small wart; refactoring
+      // loadModule() to take base as a parameter would be cleaner
+      // but requires touching more code paths.
+      var prev = ASSET_BASE;
+      ASSET_BASE = assetBase;
+      try {
+        written += await loadModule(name, mods[name]);
+      } finally {
+        ASSET_BASE = prev;
+      }
+    }
+    onProgress('done', { written: written, modules: names.length });
+    return { written: written, modules: names };
+  };
+
     Module.removeRunDependency(depTag);
   })().catch(function (err) {
     log('loadOleans crashed: ' + err);

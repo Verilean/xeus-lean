@@ -347,6 +347,17 @@ ${_init_stub_decls}}
         PUBLIC "SHELL: -s WASM_BIGINT"
         PUBLIC "SHELL: -s EXPORTED_RUNTIME_METHODS='[\"FS\",\"ENV\",\"PATH\",\"ERRNO_CODES\"]'"
         PUBLIC "SHELL: -s FORCE_FILESYSTEM"
+        # ASYNCIFY lets C++ await JS Promises via EM_ASYNC_JS — required
+        # for the cell-time `%load <bundle>` magic, which has to suspend
+        # the kernel while loadManifestAsync() fetches and unpacks an
+        # on-demand olean bundle (Mathlib, etc.) before the next cell's
+        # `import` resolves.  Cost: the linker injects coroutine state
+        # plumbing into every function reachable from an async call, so
+        # xlean.wasm is expected to grow ~30-50%.  ASYNCIFY_STACK_SIZE
+        # is per-suspension scratch; the default (4096) is too small
+        # for Lean's deep elab stacks.
+        PUBLIC "SHELL: -s ASYNCIFY=1"
+        PUBLIC "SHELL: -s ASYNCIFY_STACK_SIZE=65536"
         # EXPORT_ALL=1 did not retain Sparkle IR symbols; we use
         # --whole-archive below on sparkle_wasm instead.
     )

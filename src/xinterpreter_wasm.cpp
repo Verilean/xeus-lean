@@ -326,6 +326,64 @@ void interpreter::configure_impl()
     std::cerr << "[WASM] configure_impl: EXIT" << std::endl;
 }
 
+#ifdef __EMSCRIPTEN__
+// Suspends C++ until Module.loadManifestAsync() resolves.  Requires
+// emcc -s ASYNCIFY=1 (see CMakeLists.txt).  Returns 1 on success, 0
+// on JS exception (load failed); the failure path then surfaces an
+// error message to the user via the normal publish_execution_error
+// channel.
+EM_ASYNC_JS(int, xlean_load_manifest_async, (const char* name), {
+    try {
+        var n = UTF8ToString(name);
+        if (typeof Module.loadManifestAsync !== 'function') {
+            console.error('[%load] Module.loadManifestAsync missing');
+            return 0;
+        }
+        await Module.loadManifestAsync(n, {
+            onProgress: function (stage, info) {
+                console.log('[%load ' + n + '] ' + stage,
+                            info && info.name ? info.name : '');
+            },
+        });
+        return 1;
+    } catch (e) {
+        console.error('[%load] failed:', e);
+        return 0;
+    }
+});
+#endif
+
+// Detect a single-line `%load <name>` magic.  Returns the bundle
+// name if the entire (trimmed) cell body matches, otherwise "".
+static std::string detect_load_magic(const std::string& code)
+{
+    // Trim leading whitespace.
+    size_t start = code.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) return "";
+    if (code.compare(start, 6, "%load ") != 0) return "";
+    // Take the rest of the first line as the argument.
+    size_t arg_start = start + 6;
+    size_t nl = code.find('\n', arg_start);
+    std::string arg = (nl == std::string::npos)
+        ? code.substr(arg_start)
+        : code.substr(arg_start, nl - arg_start);
+    // Strip trailing whitespace.
+    size_t end = arg.find_last_not_of(" \t\r");
+    if (end == std::string::npos) return "";
+    arg = arg.substr(0, end + 1);
+    // The rest of the cell (after the first line) must be blank — we
+    // don't support mixing %load and Lean code in the same cell.
+    if (nl != std::string::npos) {
+        std::string rest = code.substr(nl + 1);
+        if (rest.find_first_not_of(" \t\r\n") != std::string::npos) {
+            // There is non-blank content after the magic.  Treat the
+            // whole cell as Lean code rather than silently dropping it.
+            return "";
+        }
+    }
+    return arg;
+}
+
 void interpreter::execute_request_impl(send_reply_callback cb,
                                         int execution_counter,
                                         const std::string& code,
@@ -339,6 +397,34 @@ void interpreter::execute_request_impl(send_reply_callback cb,
             cb(xeus::create_error_reply("Failed to initialize Lean runtime", "LeanError", nl::json::array()));
             return;
         }
+    }
+
+    // Intercept `%load <bundle>` before handing off to the Lean REPL.
+    // This downloads and unpacks an on-demand olean bundle (e.g.
+    // Mathlib) into /lib/lean/ so a subsequent cell can `import` from
+    // it.  Sync (the next cell would fail otherwise) — ASYNCIFY in
+    // emcc lets us suspend here while the JS Promise resolves.
+    std::string load_name = detect_load_magic(code);
+    if (!load_name.empty()) {
+#ifdef __EMSCRIPTEN__
+        std::string msg = "Loading bundle '" + load_name + "'...\n";
+        publish_stream("stdout", msg);
+        int ok = xlean_load_manifest_async(load_name.c_str());
+        if (ok) {
+            publish_stream("stdout", "Bundle '" + load_name + "' ready.\n");
+            cb(xeus::create_successful_reply());
+        } else {
+            std::string err = "Failed to load bundle '" + load_name + "'";
+            publish_execution_error("LoadError", err, {err});
+            cb(xeus::create_error_reply(err, "LoadError", nl::json::array()));
+        }
+        return;
+#else
+        std::string err = "%load is only supported in the WASM build";
+        publish_execution_error("LoadError", err, {err});
+        cb(xeus::create_error_reply(err, "LoadError", nl::json::array()));
+        return;
+#endif
     }
 
     // Call the Lean REPL
