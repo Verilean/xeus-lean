@@ -335,7 +335,11 @@ void interpreter::configure_impl()
 // settlement state; we just print progress via console.log and
 // rely on the user to wait before issuing the next cell.
 EM_JS(void, xlean_load_manifest_kick, (const char* name), {
-    var n = UTF8ToString(name);
+    // -sMEMORY64=1 passes pointers as JS BigInt; UTF8ToString takes a
+    // plain number, so we have to narrow first.  The actual address
+    // fits comfortably in a Number (we don't address more than 4 GB
+    // of heap), so the conversion is lossless.
+    var n = UTF8ToString(typeof name === 'bigint' ? Number(name) : name);
     if (typeof Module.loadManifestAsync !== 'function') {
         console.error('[%load] Module.loadManifestAsync missing');
         return;
