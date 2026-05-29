@@ -343,21 +343,15 @@ ${_init_stub_decls}}
         PUBLIC "SHELL: -s ENVIRONMENT=web,worker,node"
         PUBLIC "SHELL: -s STACK_SIZE=64mb"
         PUBLIC "SHELL: -s INITIAL_MEMORY=1024mb"
-        # 8 GB cap.  Loading Mathlib pumps ~3 GB of compressed-blob
-        # cache hits + ~5 GB of decompressed olean into MEMFS, and
-        # the elaborator's working set runs another 1-2 GB on top.
-        # With the old 4 GB cap, fetch() inside the worker started
-        # returning `TypeError: Failed to fetch` partway through the
-        # Mathlib bundle as soon as the next Response body couldn't
-        # be allocated — a memory-pressure failure mode dressed up
-        # as a network error.  MEMORY64=1 means we can address up to
-        # 2^48 bytes; 8 GB is the practical ceiling that keeps the
-        # kernel from being killed by Chrome's per-renderer cap on
-        # most desktops.
-        # emcc doesn't accept "8gb" — it parses K/MB suffixes but not GB.
-        # Spell it out in MB so the cap actually reaches the wasm binary
-        # (otherwise emcc silently falls back to the 4 GB MEMORY64 ceiling).
-        PUBLIC "SHELL: -s MAXIMUM_MEMORY=8192MB"
+        # 4 GB is the practical ceiling Chromium will allow a single
+        # renderer to address; bumping MAXIMUM_MEMORY higher doesn't
+        # help because the worker hits the V8 isolate cap (jsHeap-
+        # SizeLimit ~3.76 GB) long before wasm linear memory does.
+        # We tried 8192MB and Mathlib still failed at the same chunk
+        # — the bottleneck is JS-side Blob/Uint8Array accumulation,
+        # not wasm pages.  See loadManifestAsync's
+        # _xleanSkipExpandedCache flag for the actual workaround.
+        PUBLIC "SHELL: -s MAXIMUM_MEMORY=4gb"
         PUBLIC "SHELL: -s WASM_BIGINT"
         PUBLIC "SHELL: -s EXPORTED_RUNTIME_METHODS='[\"FS\",\"ENV\",\"PATH\",\"ERRNO_CODES\"]'"
         PUBLIC "SHELL: -s FORCE_FILESYSTEM"

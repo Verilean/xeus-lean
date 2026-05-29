@@ -390,7 +390,14 @@ Module.preRun.push(function () {
     // re-fetch and re-expand if this one didn't finish.  Wrapping
     // in queueMicrotask defers the put past the current synchronous
     // continuation so the VFS write below can run unblocked.
-    if (db) {
+    //
+    // Module._xleanSkipExpandedCache is set by loadManifestAsync()
+    // when a bundle (Mathlib) is being loaded that would otherwise
+    // run the worker out of JS heap: each Blob we queue here holds
+    // ~100-150 MB resident until IDB commit, and 32 chunks back-to-
+    // back hit Chrome's ~4 GB renderer cap.  Skipping the cache
+    // means a re-load on the next boot, but a working load now.
+    if (db && !Module._xleanSkipExpandedCache) {
       var lastEnd = entries.length > 0
         ? offsetsArr[entries.length - 1] + lengthsArr[entries.length - 1]
         : raw2.byteLength;
@@ -515,6 +522,12 @@ Module.preRun.push(function () {
   Module.loadManifestAsync = async function (manifestUrl, opts) {
     opts = opts || {};
     var onProgress = opts.onProgress || function () {};
+    // Don't write per-chunk expanded caches during this load: see
+    // (D) above.  The trade-off is that the next %load mathlib in
+    // a fresh tab pays the full fetch+decompress cost again, but at
+    // least the *current* load actually finishes instead of falling
+    // off Chrome's renderer memory cliff at chunk ~18.
+    Module._xleanSkipExpandedCache = true;
     var url, baseForAssets;
     if (/^(https?:)?\/\//.test(manifestUrl) || manifestUrl.startsWith('/')) {
       url = manifestUrl;
@@ -552,6 +565,7 @@ Module.preRun.push(function () {
       }
     }
     onProgress('done', { written: written, modules: names.length });
+    Module._xleanSkipExpandedCache = false;
     return { written: written, modules: names };
   };
 
