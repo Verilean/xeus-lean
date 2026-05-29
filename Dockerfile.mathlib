@@ -68,13 +68,16 @@ RUN lake update
 RUN lake exe cache get || true
 RUN lake build Mathlib
 
-# Stage the oleans we want to ship.  Lake puts them under
-# .lake/packages/<dep>/.lake/build/lib/.  We grab Mathlib itself
-# and the deps that Mathlib's modules transitively import.
+# Stage the oleans we want to ship.  Modern lake puts compiled
+# oleans under .lake/packages/<dep>/.lake/build/lib/lean/ (the
+# trailing `lean/` is the search root; see Lake's `LeanLibConfig`),
+# so we copy *its* contents — not the parent `lib/` — so each
+# module ends up at /out/olean/<Module>.olean as
+# pack-olean-modules.sh expects.
 RUN set -eux; \
     mkdir -p /out/olean; \
     for dep in mathlib aesop batteries importGraph proofWidgets4 plausible Qq; do \
-      src=".lake/packages/${dep}/.lake/build/lib"; \
+      src=".lake/packages/${dep}/.lake/build/lib/lean"; \
       if [ -d "$src" ]; then \
         echo "[stage] $dep -> /out/olean/"; \
         cp -r "$src"/. /out/olean/; \
@@ -83,7 +86,7 @@ RUN set -eux; \
       fi; \
     done; \
     du -sh /out/olean; \
-    find /out/olean -maxdepth 1 -mindepth 1 -type d | sort
+    find /out/olean -maxdepth 1 -mindepth 1 -name '*.olean' -o -type d | sort | head -20
 
 # Final small image: just the staged oleans, nothing else.  Lets
 # downstream builds copy without paying for the toolchain layer.
