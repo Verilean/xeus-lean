@@ -163,8 +163,14 @@ RUN PREFIX=$(pixi info -e wasm-host --json 2>/dev/null \
       # olean-modules.sh maps `Mathlib.Algebra` to
       # $SRC/Mathlib/Algebra.olean + $SRC/Mathlib/Algebra/, so the
       # on-disk layout doesn't need any rearranging.
-      MODULES="Mathlib \
-               Mathlib.Algebra \
+      # We intentionally don't ship a top-level `Mathlib` chunk: it
+      # would pack everything under Mathlib/ again (1.3 GB tarball)
+      # and the umbrella `Mathlib.olean` umbrella file is only used
+      # if a user writes `import Mathlib` to pull in the whole
+      # library, which a browser kernel can't handle anyway.  Users
+      # should `import Mathlib.Tactic` / `import Mathlib.Data.Real.Basic`
+      # etc.  — the per-namespace chunks then load on demand.
+      MODULES="Mathlib.Algebra \
                Mathlib.AlgebraicGeometry \
                Mathlib.AlgebraicTopology \
                Mathlib.Analysis \
