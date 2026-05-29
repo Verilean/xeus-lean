@@ -82,9 +82,26 @@ for MOD in $MODULES; do
         fi
     done
     if [ -d "$MOD_PATH" ]; then
+        # Exclude paths that other modules in $MODULES will pack
+        # themselves.  If we list both `Mathlib.CategoryTheory` and
+        # `Mathlib.CategoryTheory.Limits`, the parent's pack
+        # otherwise pulls Limits/ in too and the chunk gets too big
+        # all over again.  Build a list of `-not -path X/*` clauses.
+        EXCLUDE_OPTS=""
+        for OTHER in $MODULES; do
+            [ "$OTHER" = "$MOD" ] && continue
+            OTHER_PATH="${OTHER//./\/}"
+            case "$OTHER_PATH" in
+                "$MOD_PATH"/*)
+                    EXCLUDE_OPTS="$EXCLUDE_OPTS -not ( -path $OTHER_PATH -o -path $OTHER_PATH/* )"
+                    ;;
+            esac
+        done
+        # shellcheck disable=SC2086
         SUBTREE_FILES=$(find -L "$MOD_PATH" \( \
             -name '*.olean' -o -name '*.olean.server' -o -name '*.olean.private' \
-            -o -name '*.ir' -o -name '*.ilean' \) -type f 2>/dev/null || true)
+            -o -name '*.ir' -o -name '*.ilean' \) -type f \
+            $EXCLUDE_OPTS 2>/dev/null || true)
     else
         SUBTREE_FILES=""
     fi
