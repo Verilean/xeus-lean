@@ -354,7 +354,10 @@ ${_init_stub_decls}}
         # 2^48 bytes; 8 GB is the practical ceiling that keeps the
         # kernel from being killed by Chrome's per-renderer cap on
         # most desktops.
-        PUBLIC "SHELL: -s MAXIMUM_MEMORY=8gb"
+        # emcc doesn't accept "8gb" — it parses K/MB suffixes but not GB.
+        # Spell it out in MB so the cap actually reaches the wasm binary
+        # (otherwise emcc silently falls back to the 4 GB MEMORY64 ceiling).
+        PUBLIC "SHELL: -s MAXIMUM_MEMORY=8192MB"
         PUBLIC "SHELL: -s WASM_BIGINT"
         PUBLIC "SHELL: -s EXPORTED_RUNTIME_METHODS='[\"FS\",\"ENV\",\"PATH\",\"ERRNO_CODES\"]'"
         PUBLIC "SHELL: -s FORCE_FILESYSTEM"
