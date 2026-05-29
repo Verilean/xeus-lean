@@ -122,6 +122,13 @@ docker-wasm-builder-with-mathlib: docker-mathlib-image
 docker-e2e-image: docker-wasm-builder
 	docker build -f Dockerfile.e2e -t $(E2E_IMAGE) .
 
+# E2E image that bundles Mathlib, for the %load mathlib flow.  This
+# target avoids accidentally re-running docker-wasm-builder (which
+# would overwrite the mathlib-tagged builder image with a
+# mathlib-less one, since it doesn't pass --build-context).
+docker-e2e-image-with-mathlib: docker-wasm-builder-with-mathlib
+	docker build -f Dockerfile.e2e -t $(E2E_IMAGE) .
+
 e2e-docker: docker-e2e-image
 	# Pass CI=1 so the local run mirrors the GH Actions env: any
 	# `test.skip(!!process.env.CI, ...)` in the suite must behave the
