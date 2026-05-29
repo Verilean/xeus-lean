@@ -347,26 +347,22 @@ ${_init_stub_decls}}
         PUBLIC "SHELL: -s WASM_BIGINT"
         PUBLIC "SHELL: -s EXPORTED_RUNTIME_METHODS='[\"FS\",\"ENV\",\"PATH\",\"ERRNO_CODES\"]'"
         PUBLIC "SHELL: -s FORCE_FILESYSTEM"
-        # JSPI (JavaScript Promise Integration, -s ASYNCIFY=2) lets
-        # C++ await JS Promises via EM_ASYNC_JS — required for the
-        # cell-time `%load <bundle>` magic, which has to suspend the
-        # kernel while loadManifestAsync() fetches and unpacks an
-        # on-demand olean bundle (Mathlib, etc.) before the next
-        # cell's `import` resolves.
-        #
-        # Why JSPI instead of the older ASYNCIFY=1 binaryen pass:
-        # the binaryen Asyncify pass UNREACHABLEs at Asyncify.cpp:1142
-        # when combined with -sMEMORY64=1 (we have to ship 64-bit
-        # linear memory because Lean's elab heap exceeds 4 GB on
-        # Mathlib-sized workloads).  JSPI sidesteps the transform
-        # entirely — the browser implements suspension natively via
-        # the WebAssembly.Suspending / WebAssembly.promising wrappers,
-        # so wasm code keeps its single-pass shape and the binary
-        # doesn't balloon.  Requires Chrome 137+ / Edge 137+; not yet
-        # in Firefox stable.  Acceptable since the rest of the loader
-        # path (DecompressionStream('zstd'), etc.) already needs
-        # Chromium for the fast path.
-        PUBLIC "SHELL: -s ASYNCIFY=2"
+        # No -s ASYNCIFY=*.  We tried both:
+        # * ASYNCIFY=1 (binaryen pass) UNREACHABLEs at
+        #   Asyncify.cpp:1142 when combined with -sMEMORY64=1 (the
+        #   pass can't rewrite 64-bit-pointer expressions).
+        # * ASYNCIFY=2 (JSPI) only wraps main() with
+        #   WebAssembly.promising by default, but xeus's kernel loop
+        #   dispatches to execute_request_impl via std::function
+        #   callbacks that emcc doesn't see in main's call graph, so
+        #   suspension trips on `trying to suspend without
+        #   WebAssembly.promising`.  Manual JSPI_EXPORTS=[<mangled
+        #   xeus symbol>] would work but is fragile across libxeus
+        #   versions.
+        # Instead the `%load <bundle>` magic kicks loadManifestAsync
+        # as fire-and-forget JS (the cell's stdout shows progress)
+        # and returns immediately.  Users wait, then run the next
+        # cell once the log says the bundle is ready.
         # EXPORT_ALL=1 did not retain Sparkle IR symbols; we use
         # --whole-archive below on sparkle_wasm instead.
     )

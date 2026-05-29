@@ -327,29 +327,33 @@ void interpreter::configure_impl()
 }
 
 #ifdef __EMSCRIPTEN__
-// Suspends C++ until Module.loadManifestAsync() resolves.  Requires
-// emcc -s ASYNCIFY=1 (see CMakeLists.txt).  Returns 1 on success, 0
-// on JS exception (load failed); the failure path then surfaces an
-// error message to the user via the normal publish_execution_error
-// channel.
-EM_ASYNC_JS(int, xlean_load_manifest_async, (const char* name), {
-    try {
-        var n = UTF8ToString(name);
-        if (typeof Module.loadManifestAsync !== 'function') {
-            console.error('[%load] Module.loadManifestAsync missing');
-            return 0;
-        }
-        await Module.loadManifestAsync(n, {
-            onProgress: function (stage, info) {
-                console.log('[%load ' + n + '] ' + stage,
-                            info && info.name ? info.name : '');
-            },
-        });
-        return 1;
-    } catch (e) {
-        console.error('[%load] failed:', e);
-        return 0;
+// Fire-and-forget: kicks Module.loadManifestAsync() and returns
+// without waiting.  We can't await — see CMakeLists.txt for why
+// ASYNCIFY=1 (binaryen + memory64) and ASYNCIFY=2 (JSPI + xeus
+// std::function dispatch) both fail.  The Promise is stored on
+// Module.__lastLoadPromise so callers (or future probes) can poll
+// settlement state; we just print progress via console.log and
+// rely on the user to wait before issuing the next cell.
+EM_JS(void, xlean_load_manifest_kick, (const char* name), {
+    var n = UTF8ToString(name);
+    if (typeof Module.loadManifestAsync !== 'function') {
+        console.error('[%load] Module.loadManifestAsync missing');
+        return;
     }
+    var p = Module.loadManifestAsync(n, {
+        onProgress: function (stage, info) {
+            var label = '[%load ' + n + '] ' + stage;
+            if (info && info.name) label += ' ' + info.name;
+            console.log(label);
+        },
+    }).then(function (r) {
+        console.log('[%load ' + n + '] done: ' + r.written + ' files');
+        Module.__lastLoadDone = { ok: true, result: r };
+    }, function (e) {
+        console.error('[%load ' + n + '] failed:', e);
+        Module.__lastLoadDone = { ok: false, error: String(e) };
+    });
+    Module.__lastLoadPromise = p;
 });
 #endif
 
@@ -400,24 +404,26 @@ void interpreter::execute_request_impl(send_reply_callback cb,
     }
 
     // Intercept `%load <bundle>` before handing off to the Lean REPL.
-    // This downloads and unpacks an on-demand olean bundle (e.g.
-    // Mathlib) into /lib/lean/ so a subsequent cell can `import` from
-    // it.  Sync (the next cell would fail otherwise) — ASYNCIFY in
-    // emcc lets us suspend here while the JS Promise resolves.
+    // This kicks an async JS download+unpack of an on-demand olean
+    // bundle (e.g. Mathlib) into /lib/lean/ so a subsequent cell can
+    // `import` from it.
+    //
+    // The kick is fire-and-forget — we can't suspend the kernel here
+    // (see CMakeLists.txt for the ASYNCIFY=1/JSPI failure modes).
+    // Users see per-stage progress in the cell's stdout via console.
+    // log, then wait until the log says "done" before running the
+    // next cell that does the actual `import`.
     std::string load_name = detect_load_magic(code);
     if (!load_name.empty()) {
 #ifdef __EMSCRIPTEN__
-        std::string msg = "Loading bundle '" + load_name + "'...\n";
+        std::string msg = "Loading bundle '" + load_name + "' in background. "
+                          "Watch the browser DevTools console (or this cell's "
+                          "stderr) for progress; when you see "
+                          "'[%load " + load_name + "] done' you can `import` "
+                          "from it.\n";
         publish_stream("stdout", msg);
-        int ok = xlean_load_manifest_async(load_name.c_str());
-        if (ok) {
-            publish_stream("stdout", "Bundle '" + load_name + "' ready.\n");
-            cb(xeus::create_successful_reply());
-        } else {
-            std::string err = "Failed to load bundle '" + load_name + "'";
-            publish_execution_error("LoadError", err, {err});
-            cb(xeus::create_error_reply(err, "LoadError", nl::json::array()));
-        }
+        xlean_load_manifest_kick(load_name.c_str());
+        cb(xeus::create_successful_reply());
         return;
 #else
         std::string err = "%load is only supported in the WASM build";
