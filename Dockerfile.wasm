@@ -1,3 +1,11 @@
+# Default empty "mathlib-oleans" stage.  When the caller passes
+#   --build-context mathlib-oleans=docker-image://xeus-lean-mathlib
+# this gets overridden by the real Mathlib olean image.  Without
+# the override the COPY below pulls in nothing under /out/olean
+# and the pack step skips Mathlib.
+FROM scratch AS mathlib-oleans
+COPY scripts/empty-marker.txt /out/olean/.empty
+
 FROM ghcr.io/prefix-dev/pixi:latest AS builder
 
 # Install curl, git for elan, xz-utils for node binary, and python3
@@ -130,8 +138,30 @@ RUN PREFIX=$(pixi info -e wasm-host --json 2>/dev/null \
       fi && \
       mkdir -p _output/xeus/wasm-host/olean && \
       bash scripts/pack-olean-modules.sh "$PREFIX/share/jupyter/olean" _output/xeus/wasm-host/olean "" && \
-      echo "Packed olean tarballs:" && \
+      echo "Packed default olean tarballs:" && \
       ls -lh _output/xeus/wasm-host/olean/; \
+    fi
+
+# 7b. Optional: pack a `mathlib` bundle from a separately-built mathlib
+# olean tree.  Build with:
+#   docker build -f Dockerfile.mathlib -t xeus-lean-mathlib .  (slow, one-time)
+#   docker build -f Dockerfile.wasm --build-context mathlib-oleans=docker-image://xeus-lean-mathlib ...
+# The build-context line aliases the mathlib image's /out/olean as a
+# COPY source named "mathlib-oleans".  If no such context was passed,
+# this RUN line is a no-op (the directory doesn't exist).
+COPY --from=mathlib-oleans /out/olean /tmp/mathlib-olean
+RUN PREFIX=$(pixi info -e wasm-host --json 2>/dev/null \
+      | python3 -c "import sys,json; print(json.load(sys.stdin)['environments_info'][0]['prefix'])" \
+      2>/dev/null || echo ".pixi/envs/wasm-host") && \
+    if [ -d /tmp/mathlib-olean ] && find /tmp/mathlib-olean -name '*.olean' -print -quit | grep -q .; then \
+      echo "Packing mathlib bundle from /tmp/mathlib-olean" && \
+      MODULES="Mathlib Aesop Batteries ImportGraph ProofWidgets Plausible Qq" \
+      MANIFEST_NAME=mathlib \
+        bash scripts/pack-olean-modules.sh /tmp/mathlib-olean _output/xeus/wasm-host/olean "" && \
+      echo "Packed mathlib bundle:" && \
+      ls -lh _output/xeus/wasm-host/olean/Mathlib*.tar.zst _output/xeus/wasm-host/olean/manifest-mathlib.json 2>&1 | head -10; \
+    else \
+      echo "No mathlib build context supplied; skipping mathlib bundle"; \
     fi
 
 # --- Serve stage ---

@@ -96,9 +96,28 @@ deploy: lite serve
 # --- Docker-based E2E (recommended, hermetic) ---
 E2E_BUILDER_IMAGE := xeus-lean-wasm-builder
 E2E_IMAGE := xeus-lean-e2e
+MATHLIB_IMAGE := xeus-lean-mathlib
+
+# Build a Mathlib olean bundle.  Slow (~30-90 min on a fast laptop;
+# the lake build is the bottleneck and `lake exe cache get` helps
+# only when mathlib-cache has artifacts for our exact toolchain).
+# Output: an image whose /out/olean tree is what %load mathlib will
+# fetch in the browser.  Run once per Mathlib version.
+docker-mathlib-image:
+	docker build -f Dockerfile.mathlib -t $(MATHLIB_IMAGE) .
 
 docker-wasm-builder:
 	docker build -f Dockerfile.wasm -t $(E2E_BUILDER_IMAGE) --target builder .
+
+# Same as docker-wasm-builder but additionally packs a Mathlib bundle
+# (manifest-mathlib.json + Mathlib-olean.tar.zst + dep tarballs) into
+# the JupyterLite output.  Requires docker-mathlib-image to have
+# produced $(MATHLIB_IMAGE) first.  The --build-context line aliases
+# that image into the wasm Dockerfile as `mathlib-oleans` so the
+# pack step finds the staged tree.
+docker-wasm-builder-with-mathlib: docker-mathlib-image
+	docker build -f Dockerfile.wasm -t $(E2E_BUILDER_IMAGE) --target builder \
+		--build-context mathlib-oleans=docker-image://$(MATHLIB_IMAGE) .
 
 docker-e2e-image: docker-wasm-builder
 	docker build -f Dockerfile.e2e -t $(E2E_IMAGE) .

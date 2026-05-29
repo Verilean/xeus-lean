@@ -1,0 +1,4 @@
+this file's only purpose is to be COPY'd by Dockerfile.wasm's empty
+default `mathlib-oleans` stage so that the COPY doesn't error.  Real
+mathlib oleans replace this when the build is invoked with
+--build-context mathlib-oleans=docker-image://xeus-lean-mathlib.

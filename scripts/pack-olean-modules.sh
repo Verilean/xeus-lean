@@ -36,11 +36,18 @@ SRC=$(cd "$SRC" && pwd)
 OUT=$(cd "$OUT" && pwd)
 
 # Modules to bundle. Each entry is the module name (= top-level dir name in $SRC).
-# Init lives here too (used to be --embed-file'd into xlean.wasm, now shipped
-# as a tarball alongside Std/Lean for smaller WASM bytes and faster load).
-# Hesper is optional — it's only present when the hesper submodule + WASM build
-# wrapper produced staged oleans (see hesper-wasm/build-wasm.sh).
-MODULES="Init Std Lean Sparkle Hesper"
+# Default is the always-shipped set: Init (used to be --embed-file'd into
+# xlean.wasm, now a tarball for smaller WASM + faster load), Std, Lean, Sparkle,
+# and the optional Hesper.
+#
+# Override MODULES to build a separate bundle, e.g. for Mathlib:
+#   MODULES="Mathlib Aesop Batteries ImportGraph ProofWidgets4 Plausible Qq" \
+#   MANIFEST_NAME=mathlib \
+#     pack-olean-modules.sh $SRC $OUT
+# Then post.js's loadManifestAsync('mathlib') will fetch
+# `<base>manifest-mathlib.json` and the per-module tarballs alongside it.
+MODULES="${MODULES:-Init Std Lean Sparkle Hesper}"
+MANIFEST_NAME="${MANIFEST_NAME:-v2}"
 
 # Build manifest as we go.
 MANIFEST_JSON='{"version":"v2","baseUrl":"'"$BASE_URL"'","modules":{'
@@ -93,9 +100,10 @@ for MOD in $MODULES; do
 done
 
 MANIFEST_JSON="$MANIFEST_JSON}}"
-printf '%s\n' "$MANIFEST_JSON" > "$OUT/manifest-v2.json"
+MANIFEST_FILE="$OUT/manifest-${MANIFEST_NAME}.json"
+printf '%s\n' "$MANIFEST_JSON" > "$MANIFEST_FILE"
 
-echo "[pack] wrote $OUT/manifest-v2.json:" >&2
-cat "$OUT/manifest-v2.json" >&2
+echo "[pack] wrote $MANIFEST_FILE:" >&2
+cat "$MANIFEST_FILE" >&2
 echo "" >&2
 echo "[pack] total tarball size: $(du -sh "$OUT"/*.tar.zst 2>/dev/null | tail -1 | awk '{print $1}')" >&2

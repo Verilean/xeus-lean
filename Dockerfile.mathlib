@@ -1,0 +1,84 @@
+# Build a Mathlib olean bundle that matches our lean-toolchain.
+#
+# We don't need anything from xeus-lean here — just elan + lake, plus
+# enough patience to compile Mathlib (~30-90 min depending on host
+# CPU).  The produced /out/olean/Mathlib/ tree is what the runtime
+# %load magic in xeus-lean fetches on demand.
+#
+# Usage:
+#
+#   docker build -f Dockerfile.mathlib -t xeus-lean-mathlib .
+#   docker run --rm xeus-lean-mathlib tar -cC /out/olean . | \
+#     tar -xC ./_mathlib_olean
+#
+# The Dockerfile.wasm side picks this image up via --build-context
+# (see Makefile) so the wasm-host build can copy oleans straight in.
+
+ARG LEAN_VERSION=v4.28.0
+FROM ubuntu:24.04 AS builder
+
+ARG LEAN_VERSION
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl git build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# elan installs lake + lean toolchain matching mathlib's
+# lean-toolchain file (we still pass the version explicitly so the
+# layer is reproducible).
+RUN curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+        | sh -s -- -y --default-toolchain ${LEAN_VERSION}
+ENV PATH=/root/.elan/bin:${PATH}
+
+WORKDIR /work
+
+# A tiny "bundle" package that requires Mathlib.  Lake will fetch
+# Mathlib + its transitive deps (Aesop, Batteries, ImportGraph,
+# ProofWidgets, Plausible, Qq) and build them all.
+RUN echo "${LEAN_VERSION}" > lean-toolchain
+RUN cat > lakefile.toml <<EOF
+name = "mathlib-bundle"
+defaultTargets = ["MathlibBundle"]
+
+[[lean_lib]]
+name = "MathlibBundle"
+
+[[require]]
+name = "mathlib"
+git  = "https://github.com/leanprover-community/mathlib4"
+rev  = "${LEAN_VERSION}"
+EOF
+
+# The lib needs at least one .lean file so `lake build` has
+# something to elaborate.  Importing Mathlib transitively pulls
+# the full library into the build graph.
+RUN mkdir -p MathlibBundle && \
+    echo "import Mathlib" > MathlibBundle.lean
+
+# Pre-fetch + build.  The mathlib-cache CLI downloads pre-compiled
+# oleans where available; falling through to local builds otherwise.
+RUN lake update
+RUN lake exe cache get || true
+RUN lake build Mathlib
+
+# Stage the oleans we want to ship.  Lake puts them under
+# .lake/packages/<dep>/.lake/build/lib/.  We grab Mathlib itself
+# and the deps that Mathlib's modules transitively import.
+RUN set -eux; \
+    mkdir -p /out/olean; \
+    for dep in mathlib aesop batteries importGraph proofWidgets4 plausible Qq; do \
+      src=".lake/packages/${dep}/.lake/build/lib"; \
+      if [ -d "$src" ]; then \
+        echo "[stage] $dep -> /out/olean/"; \
+        cp -r "$src"/. /out/olean/; \
+      else \
+        echo "[stage] skip $dep (no $src)"; \
+      fi; \
+    done; \
+    du -sh /out/olean; \
+    find /out/olean -maxdepth 1 -mindepth 1 -type d | sort
+
+# Final small image: just the staged oleans, nothing else.  Lets
+# downstream builds copy without paying for the toolchain layer.
+FROM scratch AS oleans
+COPY --from=builder /out/olean /out/olean
