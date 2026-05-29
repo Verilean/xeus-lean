@@ -155,11 +155,52 @@ RUN PREFIX=$(pixi info -e wasm-host --json 2>/dev/null \
       2>/dev/null || echo ".pixi/envs/wasm-host") && \
     if [ -d /tmp/mathlib-olean ] && find /tmp/mathlib-olean -name '*.olean' -print -quit | grep -q .; then \
       echo "Packing mathlib bundle from /tmp/mathlib-olean" && \
-      MODULES="Mathlib Aesop Batteries ImportGraph ProofWidgets Plausible Qq" \
+      # Mathlib chunked by top-level namespace.  A single
+      # Mathlib-olean.tar.zst would be ~1.3 GB compressed and tripped
+      # Chrome's worker-fetch limit ("TypeError: Failed to fetch")
+      # on the very first byte.  Splitting into per-namespace chunks
+      # keeps every tarball well under 500 MB compressed.  pack-
+      # olean-modules.sh maps `Mathlib.Algebra` to
+      # $SRC/Mathlib/Algebra.olean + $SRC/Mathlib/Algebra/, so the
+      # on-disk layout doesn't need any rearranging.
+      MODULES="Mathlib \
+               Mathlib.Algebra \
+               Mathlib.AlgebraicGeometry \
+               Mathlib.AlgebraicTopology \
+               Mathlib.Analysis \
+               Mathlib.CategoryTheory \
+               Mathlib.Combinatorics \
+               Mathlib.Computability \
+               Mathlib.Condensed \
+               Mathlib.Control \
+               Mathlib.Data \
+               Mathlib.Deprecated \
+               Mathlib.Dynamics \
+               Mathlib.FieldTheory \
+               Mathlib.Geometry \
+               Mathlib.GroupTheory \
+               Mathlib.InformationTheory \
+               Mathlib.Init \
+               Mathlib.Lean \
+               Mathlib.LinearAlgebra \
+               Mathlib.Logic \
+               Mathlib.MeasureTheory \
+               Mathlib.ModelTheory \
+               Mathlib.NumberTheory \
+               Mathlib.Order \
+               Mathlib.Probability \
+               Mathlib.RepresentationTheory \
+               Mathlib.RingTheory \
+               Mathlib.SetTheory \
+               Mathlib.Tactic \
+               Mathlib.Testing \
+               Mathlib.Topology \
+               Mathlib.Util \
+               Aesop Batteries ImportGraph Plausible Qq" \
       MANIFEST_NAME=mathlib \
         bash scripts/pack-olean-modules.sh /tmp/mathlib-olean _output/xeus/wasm-host/olean "" && \
       echo "Packed mathlib bundle:" && \
-      ls -lh _output/xeus/wasm-host/olean/Mathlib*.tar.zst _output/xeus/wasm-host/olean/manifest-mathlib.json 2>&1 | head -10; \
+      ls -lh _output/xeus/wasm-host/olean/Mathlib*.tar.zst _output/xeus/wasm-host/olean/manifest-mathlib.json 2>&1 | head -50; \
     else \
       echo "No mathlib build context supplied; skipping mathlib bundle"; \
     fi

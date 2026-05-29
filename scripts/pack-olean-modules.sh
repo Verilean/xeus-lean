@@ -54,13 +54,18 @@ MANIFEST_JSON='{"version":"v2","baseUrl":"'"$BASE_URL"'","modules":{'
 FIRST=1
 
 for MOD in $MODULES; do
-    # A module is present if EITHER the top-level `$MOD.olean` exists (the
-    # full umbrella, e.g. Std/Lean/Sparkle from elan toolchain) OR the
-    # submodule directory exists with at least one olean inside (partial
-    # build, e.g. Hesper limited to WGSL).
-    if [ ! -e "$SRC/$MOD.olean" ] && \
-       ! ([ -d "$SRC/$MOD" ] && find -L "$SRC/$MOD" -name '*.olean' -print -quit | grep -q .); then
-        echo "[pack] skipping $MOD: no $MOD.olean and no oleans under $MOD/" >&2
+    # A "module" here is a Lean module name (dot-separated), e.g.
+    # `Mathlib` or `Mathlib.Algebra`.  We translate dots to slashes
+    # to map it onto the on-disk olean layout: `Mathlib.Algebra`
+    # corresponds to $SRC/Mathlib/Algebra.olean (the umbrella file)
+    # plus $SRC/Mathlib/Algebra/ (the per-submodule oleans).  This
+    # lets us split a huge top-level bundle like Mathlib (4 GB on
+    # disk, 1.3 GB zstd-19) into per-namespace chunks that each
+    # stay under Chrome's worker-fetch size ceiling (~1 GB).
+    MOD_PATH="${MOD//./\/}"
+    if [ ! -e "$SRC/$MOD_PATH.olean" ] && \
+       ! ([ -d "$SRC/$MOD_PATH" ] && find -L "$SRC/$MOD_PATH" -name '*.olean' -print -quit | grep -q .); then
+        echo "[pack] skipping $MOD: no $MOD_PATH.olean and no oleans under $MOD_PATH/" >&2
         continue
     fi
 
@@ -72,13 +77,17 @@ for MOD in $MODULES; do
     cd "$SRC"
     PATTERNS=""
     for ext in olean olean.server olean.private ir ilean; do
-        if [ -e "$MOD.$ext" ]; then
-            PATTERNS="$PATTERNS $MOD.$ext"
+        if [ -e "$MOD_PATH.$ext" ]; then
+            PATTERNS="$PATTERNS $MOD_PATH.$ext"
         fi
     done
-    SUBTREE_FILES=$(find -L "$MOD" \( \
-        -name '*.olean' -o -name '*.olean.server' -o -name '*.olean.private' \
-        -o -name '*.ir' -o -name '*.ilean' \) -type f 2>/dev/null || true)
+    if [ -d "$MOD_PATH" ]; then
+        SUBTREE_FILES=$(find -L "$MOD_PATH" \( \
+            -name '*.olean' -o -name '*.olean.server' -o -name '*.olean.private' \
+            -o -name '*.ir' -o -name '*.ilean' \) -type f 2>/dev/null || true)
+    else
+        SUBTREE_FILES=""
+    fi
 
     FILE_COUNT=$(printf '%s\n' $PATTERNS $SUBTREE_FILES | grep -c . || true)
     echo "[pack] $MOD: $FILE_COUNT files → $ASSET" >&2
