@@ -372,9 +372,10 @@ EM_JS(char*, xlean_load_drain, (void), {
     var line = q.shift();
     var len = lengthBytesUTF8(line) + 1;
     // -sMEMORY64=1: _malloc expects a BigInt size and returns a
-    // BigInt pointer; EM_JS doesn't synthesise the wrapping.
+    // BigInt pointer.  stringToUTF8 needs a Number index into the
+    // heap, so narrow the pointer just for that one call.
     var ptr = _malloc(BigInt(len));
-    stringToUTF8(line, ptr, len);
+    stringToUTF8(line, Number(ptr), len);
     return ptr;
 });
 
@@ -389,7 +390,7 @@ EM_JS(char*, xlean_load_fail_msg, (void), {
     if (!s) return 0;
     var len = lengthBytesUTF8(s) + 1;
     var ptr = _malloc(BigInt(len));
-    stringToUTF8(s, ptr, len);
+    stringToUTF8(s, Number(ptr), len);
     return ptr;
 });
 #endif
