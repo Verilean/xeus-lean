@@ -42,6 +42,7 @@ chapter without firing up a kernel.
 ### Part IV — Optional deeper dives
 - **Ch14 — [JSON](Ch14_JSON.md)** — `Json.mkObj`, `compress` / `pretty`, parsing, `deriving ToJson, FromJson`, `.jsonl` streaming
 - **Ch15 — [Macros](Ch15_Macros.md)** — `notation`, `macro`, `elab`, hygiene, anti-quotation, when *not* to write one
+- **Ch16 — [Type-level programming](Ch16_TypeLevel.md)** — type application, value↔type, GADTs / type families, side-by-side with Haskell
 
 ## How this is built
 
