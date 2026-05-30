@@ -341,8 +341,8 @@ EM_JS(void, xlean_load_manifest_kick, (const char* name), {
     Module.__loadProgressQueue = Module.__loadProgressQueue || [];
     Module.__loadProgressQueue.length = 0;
     Module.__loadDone = 0;        // 0 = running, 1 = ok, 2 = failed
-    Module.__loadFailMsg = '';
-    if (typeof Module.loadManifestAsync !== 'function') {
+    Module.__loadFailMsg = "";
+    if (typeof Module.loadManifestAsync !== "function") {
         Module.__loadProgressQueue.push('[%load] Module.loadManifestAsync missing\n');
         Module.__loadDone = 2;
         Module.__loadFailMsg = 'loader missing';
@@ -398,7 +398,7 @@ EM_JS(char*, xlean_load_fail_msg, (void), {
 // poll_load_progress() deletes it.
 struct LoadCtx {
     interpreter* self;
-    send_reply_callback cb;
+    xeus::xinterpreter::send_reply_callback cb;
     std::string name;
 };
 
