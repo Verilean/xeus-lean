@@ -6,6 +6,7 @@ Xeus Kernel - Lean owns the main loop and calls C++ xeus via FFI
 -/
 import REPL.Main
 import Lean.Data.Json
+import Lean.LoadDynlib
 -- Display lets user cells emit MIME-typed payloads (HTML / SVG / Markdown / ...).
 -- The buffer is drained after every cell and forwarded to Jupyter through the
 -- C++ FFI, which parses the MIME markers out of the result string.
@@ -179,6 +180,18 @@ partial def kernelLoop (handle : KernelHandle) (replState : IO.Ref State) (curre
       | (.inl response, newState) =>
         replState.set newState
 
+        -- Lean's "X has already been declared" error is technically
+        -- correct but a notebook user trying to redefine a cell hits
+        -- it constantly and the message tells them nothing actionable.
+        -- Append a notebook-specific hint so they know what to do.
+        let augmentDuplicate (msg : String) : String :=
+          if msg.startsWith "'" && msg.endsWith "has already been declared" then
+            msg ++ "\n  hint: this notebook kernel keeps every previously-\n"
+                ++ "    defined name in scope. Either rename this definition,\n"
+                ++ "    or restart the kernel (Kernel → Restart) to clear the\n"
+                ++ "    old binding."
+          else
+            msg
         -- Format messages for the notebook. We render every severity
         -- (info, warning, error) the same way Lean's compiler does:
         --   <line>:<col>: <severity>: <data>
@@ -196,7 +209,7 @@ partial def kernelLoop (handle : KernelHandle) (replState : IO.Ref State) (curre
             -- a REPL.
             m.data
           else
-            s!"{posStr}: {sev}: {m.data}"
+            s!"{posStr}: {sev}: {augmentDuplicate m.data}"
         let renderedMsgs :=
           if response.messages.isEmpty then ""
           else String.intercalate "\n" (response.messages.map renderMsg)
@@ -253,6 +266,21 @@ def main (args : List String) : IO Unit := do
 
   -- Initialize search path
   Lean.initSearchPath (← Lean.findSysroot)
+
+  -- Load any extra native shared libraries listed in `LEAN_DYNLIB_PATH`
+  -- (colon-separated list of `.so` paths).  This is what makes
+  -- `#eval` cells in notebooks resolve `@[extern]` symbols provided by
+  -- downstream Lean libraries built with `precompileModules := true`
+  -- — without this, the elaborator can typecheck the call but cannot
+  -- run it.
+  if let some dynlibPath ← IO.getEnv "LEAN_DYNLIB_PATH" then
+    for entry in dynlibPath.splitOn ":" do
+      if !entry.isEmpty then
+        debugLog s!"[Lean Kernel] Loading dynlib: {entry}"
+        try
+          Lean.loadDynlib entry
+        catch e =>
+          IO.eprintln s!"[Lean Kernel] Warning: failed to load {entry}: {e}"
 
   debugLog "[Lean Kernel] Initializing FFI..."
   ffiInitialize

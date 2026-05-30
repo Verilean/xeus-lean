@@ -593,6 +593,24 @@ void interpreter::execute_request_impl(send_reply_callback cb,
                         line = msg["pos"].value("line", 0);
                         col  = msg["pos"].value("column", 0);
                     }
+                    // Lean's stock "'foo' has already been declared" error
+                    // is bewildering to notebook users who try to redefine
+                    // a value across cells.  Append a hint that points at
+                    // the actual fix (rename or restart kernel).
+                    static const std::string declared_suffix =
+                        "has already been declared";
+                    if (!data.empty() && data.front() == '\'' &&
+                        data.size() >= declared_suffix.size() &&
+                        data.compare(data.size() - declared_suffix.size(),
+                                     declared_suffix.size(),
+                                     declared_suffix) == 0) {
+                        data +=
+                            "\n  hint: this notebook kernel keeps every "
+                            "previously-defined name in scope. Either rename "
+                            "this definition, or restart the kernel "
+                            "(Kernel \xe2\x86\x92 Restart) to clear the old "
+                            "binding.";
+                    }
                     append_line(std::to_string(line) + ":"
                                 + std::to_string(col) + ": "
                                 + severity + ": " + data);
