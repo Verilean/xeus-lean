@@ -76,7 +76,7 @@ RUN lake build Mathlib
 # pack-olean-modules.sh expects.
 RUN set -eux; \
     mkdir -p /out/olean; \
-    for dep in mathlib aesop batteries importGraph proofWidgets4 plausible Qq; do \
+    for dep in mathlib aesop batteries importGraph proofwidgets plausible Qq LeanSearchClient Cli; do \
       src=".lake/packages/${dep}/.lake/build/lib/lean"; \
       if [ -d "$src" ]; then \
         echo "[stage] $dep -> /out/olean/"; \

@@ -205,7 +205,8 @@ RUN PREFIX=$(pixi info -e wasm-host --json 2>/dev/null \
                Mathlib.Testing \
                Mathlib.Topology \
                Mathlib.Util \
-               Aesop Batteries ImportGraph Plausible Qq" \
+               Aesop Batteries ImportGraph Plausible Qq \
+               LeanSearchClient Cli ProofWidgets" \
       MANIFEST_NAME=mathlib \
         bash scripts/pack-olean-modules.sh /tmp/mathlib-olean _output/xeus/wasm-host/olean "" && \
       echo "Packed mathlib bundle:" && \
