@@ -9,6 +9,7 @@
 #include <iostream>
 #include <string>
 #include <sstream>
+#include <memory>
 #include <unordered_set>
 #include <unordered_map>
 #include <stdexcept>
@@ -396,18 +397,25 @@ EM_JS(char*, xlean_load_fail_msg, (void), {
 #endif
 
 #ifdef __EMSCRIPTEN__
-// Per-`%load` poll state.  Lives on the heap from the moment the
-// magic kicks off until the JS-side Promise settles, at which point
-// poll_load_progress() deletes it.
+// Per-`%load` poll state.  We can't pass it through emscripten_async_call's
+// `void* arg` parameter — under -sMEMORY64=1 emcc's callback wrapper boxes
+// the pointer as a Number and the wasm side then trips on
+// "Cannot convert <addr> to a BigInt" the moment the callback fires.
+// Keep the state in a single file-scope unique_ptr instead.  We only ever
+// run one %load at a time anyway (xeus serialises execute_request_impl
+// calls).
 struct LoadCtx {
     interpreter* self;
     xeus::xinterpreter::send_reply_callback cb;
     std::string name;
 };
 
-static void poll_load_progress(void* arg)
+static std::unique_ptr<LoadCtx> g_load_ctx;
+
+static void poll_load_progress(void* /*unused*/)
 {
-    auto* c = static_cast<LoadCtx*>(arg);
+    if (!g_load_ctx) return;
+    auto* c = g_load_ctx.get();
 
     // Drain whatever the JS side has queued since the last tick.
     while (true) {
@@ -419,7 +427,7 @@ static void poll_load_progress(void* arg)
 
     int st = xlean_load_status();
     if (st == 0) {
-        emscripten_async_call(&poll_load_progress, arg, 100);
+        emscripten_async_call(&poll_load_progress, nullptr, 100);
         return;
     }
     if (st == 1) {
@@ -431,7 +439,7 @@ static void poll_load_progress(void* arg)
         c->self->publish_execution_error("LoadError", err, {err});
         c->cb(xeus::create_error_reply(err, "LoadError", nl::json::array()));
     }
-    delete c;
+    g_load_ctx.reset();
 }
 #endif
 
@@ -500,8 +508,11 @@ void interpreter::execute_request_impl(send_reply_callback cb,
 #ifdef __EMSCRIPTEN__
         publish_stream("stdout", "Loading bundle '" + load_name + "'...\n");
         xlean_load_manifest_kick(load_name.c_str());
-        auto* ctx = new LoadCtx{this, std::move(cb), load_name};
-        emscripten_async_call(&poll_load_progress, ctx, 100);
+        // Stash the per-load state in the file-scope unique_ptr (see the
+        // poll_load_progress comment for why we can't use async_call's
+        // void* arg under MEMORY64).
+        g_load_ctx.reset(new LoadCtx{this, std::move(cb), load_name});
+        emscripten_async_call(&poll_load_progress, nullptr, 100);
         return;
 #else
         std::string err = "%load is only supported in the WASM build";
