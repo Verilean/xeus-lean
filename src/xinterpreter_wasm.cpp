@@ -365,19 +365,20 @@ EM_JS(void, xlean_load_manifest_kick, (const char* name), {
     });
 });
 
-// Drain one progress line as a malloc'd C string (caller frees), or
-// null when the queue is empty.
-EM_JS(char*, xlean_load_drain, (void), {
+// Write one progress line into a caller-provided buffer; returns the
+// number of UTF-8 bytes that *would* have been written (0 means queue
+// empty).  Taking a buffer avoids returning a `char*` across the
+// EM_JS boundary — emcc's wrapper under -sMEMORY64=1 mis-handles the
+// pointer return-value box/unbox and raises "Cannot convert <addr>
+// to a BigInt" on the very first call.  An int return is the safest
+// shape under memory64.
+EM_JS(int, xlean_load_drain_to, (char* buf, int max_bytes), {
     var q = Module.__loadProgressQueue;
     if (!q || q.length === 0) return 0;
     var line = q.shift();
-    var len = lengthBytesUTF8(line) + 1;
-    // -sMEMORY64=1: _malloc expects a BigInt size and returns a
-    // BigInt pointer.  stringToUTF8 needs a Number index into the
-    // heap, so narrow the pointer just for that one call.
-    var ptr = _malloc(BigInt(len));
-    stringToUTF8(line, Number(ptr), len);
-    return ptr;
+    var n = lengthBytesUTF8(line);
+    stringToUTF8(line, Number(buf), max_bytes);
+    return n;
 });
 
 // 0 = still running, 1 = success, 2 = failed.
@@ -385,14 +386,14 @@ EM_JS(int, xlean_load_status, (void), {
     return Module.__loadDone || 0;
 });
 
-// Caller frees the returned string; null when no error message.
-EM_JS(char*, xlean_load_fail_msg, (void), {
+// Write the load-failure message into the caller's buffer.  Returns
+// the number of UTF-8 bytes (0 when there's no failure message).
+EM_JS(int, xlean_load_fail_msg_to, (char* buf, int max_bytes), {
     var s = Module.__loadFailMsg || "";
     if (!s) return 0;
-    var len = lengthBytesUTF8(s) + 1;
-    var ptr = _malloc(BigInt(len));
-    stringToUTF8(s, Number(ptr), len);
-    return ptr;
+    var n = lengthBytesUTF8(s);
+    stringToUTF8(s, Number(buf), max_bytes);
+    return n;
 });
 #endif
 
@@ -427,12 +428,16 @@ extern "C" EMSCRIPTEN_KEEPALIVE void xlean_poll_load_progress()
     if (!g_load_ctx) return;
     auto* c = g_load_ctx.get();
 
+    // Caller-allocated buffer the EM_JS drain functions fill.  4 KiB is
+    // larger than any progress line we generate.
+    char buf[4096];
+
     // Drain whatever the JS side has queued since the last tick.
     while (true) {
-        char* line = xlean_load_drain();
-        if (!line) break;
-        c->self->publish_stream("stdout", std::string(line));
-        std::free(line);
+        int n = xlean_load_drain_to(buf, sizeof(buf));
+        if (n <= 0) break;
+        buf[std::min(n, (int)sizeof(buf) - 1)] = '\0';
+        c->self->publish_stream("stdout", std::string(buf));
     }
 
     int st = xlean_load_status();
@@ -443,9 +448,9 @@ extern "C" EMSCRIPTEN_KEEPALIVE void xlean_poll_load_progress()
     if (st == 1) {
         c->cb(xeus::create_successful_reply());
     } else {
-        char* msg = xlean_load_fail_msg();
-        std::string err = msg ? msg : "load failed";
-        if (msg) std::free(msg);
+        int n = xlean_load_fail_msg_to(buf, sizeof(buf));
+        buf[std::min(n, (int)sizeof(buf) - 1)] = '\0';
+        std::string err = n > 0 ? buf : "load failed";
         c->self->publish_execution_error("LoadError", err, {err});
         c->cb(xeus::create_error_reply(err, "LoadError", nl::json::array()));
     }
