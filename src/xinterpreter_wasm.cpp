@@ -336,29 +336,100 @@ void interpreter::configure_impl()
 // rely on the user to wait before issuing the next cell.
 EM_JS(void, xlean_load_manifest_kick, (const char* name), {
     // -sMEMORY64=1 passes pointers as JS BigInt; UTF8ToString takes a
-    // plain number, so we have to narrow first.  The actual address
-    // fits comfortably in a Number (we don't address more than 4 GB
-    // of heap), so the conversion is lossless.
+    // plain number, so we have to narrow first.
     var n = UTF8ToString(typeof name === 'bigint' ? Number(name) : name);
+    Module.__loadProgressQueue = Module.__loadProgressQueue || [];
+    Module.__loadProgressQueue.length = 0;
+    Module.__loadDone = 0;        // 0 = running, 1 = ok, 2 = failed
+    Module.__loadFailMsg = '';
     if (typeof Module.loadManifestAsync !== 'function') {
-        console.error('[%load] Module.loadManifestAsync missing');
+        Module.__loadProgressQueue.push('[%load] Module.loadManifestAsync missing\n');
+        Module.__loadDone = 2;
+        Module.__loadFailMsg = 'loader missing';
         return;
     }
-    var p = Module.loadManifestAsync(n, {
+    Module.loadManifestAsync(n, {
         onProgress: function (stage, info) {
-            var label = '[%load ' + n + '] ' + stage;
-            if (info && info.name) label += ' ' + info.name;
-            console.log(label);
+            var line = '[%load ' + n + '] ' + stage;
+            if (info && info.name) line += ' ' + info.name;
+            Module.__loadProgressQueue.push(line + '\n');
         },
     }).then(function (r) {
-        console.log('[%load ' + n + '] done: ' + r.written + ' files');
-        Module.__lastLoadDone = { ok: true, result: r };
+        Module.__loadProgressQueue.push('[%load ' + n + '] done: ' + r.written + ' files\n');
+        Module.__loadDone = 1;
     }, function (e) {
-        console.error('[%load ' + n + '] failed:', e);
-        Module.__lastLoadDone = { ok: false, error: String(e) };
+        Module.__loadProgressQueue.push('[%load ' + n + '] failed: ' + String(e) + '\n');
+        Module.__loadDone = 2;
+        Module.__loadFailMsg = String(e);
     });
-    Module.__lastLoadPromise = p;
 });
+
+// Drain one progress line as a malloc'd C string (caller frees), or
+// null when the queue is empty.
+EM_JS(char*, xlean_load_drain, (void), {
+    var q = Module.__loadProgressQueue;
+    if (!q || q.length === 0) return 0;
+    var line = q.shift();
+    var len = lengthBytesUTF8(line) + 1;
+    var ptr = _malloc(len);
+    stringToUTF8(line, ptr, len);
+    return ptr;
+});
+
+// 0 = still running, 1 = success, 2 = failed.
+EM_JS(int, xlean_load_status, (void), {
+    return Module.__loadDone || 0;
+});
+
+// Caller frees the returned string; null when no error message.
+EM_JS(char*, xlean_load_fail_msg, (void), {
+    var s = Module.__loadFailMsg || '';
+    if (!s) return 0;
+    var len = lengthBytesUTF8(s) + 1;
+    var ptr = _malloc(len);
+    stringToUTF8(s, ptr, len);
+    return ptr;
+});
+#endif
+
+#ifdef __EMSCRIPTEN__
+// Per-`%load` poll state.  Lives on the heap from the moment the
+// magic kicks off until the JS-side Promise settles, at which point
+// poll_load_progress() deletes it.
+struct LoadCtx {
+    interpreter* self;
+    send_reply_callback cb;
+    std::string name;
+};
+
+static void poll_load_progress(void* arg)
+{
+    auto* c = static_cast<LoadCtx*>(arg);
+
+    // Drain whatever the JS side has queued since the last tick.
+    while (true) {
+        char* line = xlean_load_drain();
+        if (!line) break;
+        c->self->publish_stream("stdout", std::string(line));
+        std::free(line);
+    }
+
+    int st = xlean_load_status();
+    if (st == 0) {
+        emscripten_async_call(&poll_load_progress, arg, 100);
+        return;
+    }
+    if (st == 1) {
+        c->cb(xeus::create_successful_reply());
+    } else {
+        char* msg = xlean_load_fail_msg();
+        std::string err = msg ? msg : "load failed";
+        if (msg) std::free(msg);
+        c->self->publish_execution_error("LoadError", err, {err});
+        c->cb(xeus::create_error_reply(err, "LoadError", nl::json::array()));
+    }
+    delete c;
+}
 #endif
 
 // Detect a single-line `%load <name>` magic.  Returns the bundle
@@ -412,22 +483,22 @@ void interpreter::execute_request_impl(send_reply_callback cb,
     // bundle (e.g. Mathlib) into /lib/lean/ so a subsequent cell can
     // `import` from it.
     //
-    // The kick is fire-and-forget — we can't suspend the kernel here
-    // (see CMakeLists.txt for the ASYNCIFY=1/JSPI failure modes).
-    // Users see per-stage progress in the cell's stdout via console.
-    // log, then wait until the log says "done" before running the
-    // next cell that does the actual `import`.
+    // The kick itself is fire-and-forget (we can't suspend the kernel
+    // here — see CMakeLists.txt for the ASYNCIFY=1/JSPI failure modes),
+    // but we still want the cell to *look* live: per-chunk progress in
+    // its stdout, and a single `cb()` call only after the whole bundle
+    // finishes (so the notebook keeps showing "running" until then).
+    // We achieve that by setting up an emscripten_async_call poll that
+    // drains the JS-side progress queue every ~100 ms, forwarding lines
+    // via publish_stream(), and finally calling the saved cb when
+    // xlean_load_status() flips to 1 or 2.
     std::string load_name = detect_load_magic(code);
     if (!load_name.empty()) {
 #ifdef __EMSCRIPTEN__
-        std::string msg = "Loading bundle '" + load_name + "' in background. "
-                          "Watch the browser DevTools console (or this cell's "
-                          "stderr) for progress; when you see "
-                          "'[%load " + load_name + "] done' you can `import` "
-                          "from it.\n";
-        publish_stream("stdout", msg);
+        publish_stream("stdout", "Loading bundle '" + load_name + "'...\n");
         xlean_load_manifest_kick(load_name.c_str());
-        cb(xeus::create_successful_reply());
+        auto* ctx = new LoadCtx{this, std::move(cb), load_name};
+        emscripten_async_call(&poll_load_progress, ctx, 100);
         return;
 #else
         std::string err = "%load is only supported in the WASM build";
