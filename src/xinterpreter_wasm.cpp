@@ -412,7 +412,17 @@ struct LoadCtx {
 
 static std::unique_ptr<LoadCtx> g_load_ctx;
 
-static void poll_load_progress(void* /*unused*/)
+// Wasm export the poll function so JS-side setTimeout can call it
+// directly, bypassing emscripten_async_call's broken void* wrapper
+// under MEMORY64.
+extern "C" EMSCRIPTEN_KEEPALIVE void xlean_poll_load_progress();
+
+// JS-side scheduler: just a wrapped setTimeout to xlean_poll_load_progress.
+EM_JS(void, schedule_poll_load_progress, (int delay_ms), {
+    setTimeout(function () { Module._xlean_poll_load_progress(); }, delay_ms);
+});
+
+extern "C" EMSCRIPTEN_KEEPALIVE void xlean_poll_load_progress()
 {
     if (!g_load_ctx) return;
     auto* c = g_load_ctx.get();
@@ -427,7 +437,7 @@ static void poll_load_progress(void* /*unused*/)
 
     int st = xlean_load_status();
     if (st == 0) {
-        emscripten_async_call(&poll_load_progress, nullptr, 100);
+        schedule_poll_load_progress(100);
         return;
     }
     if (st == 1) {
@@ -512,7 +522,7 @@ void interpreter::execute_request_impl(send_reply_callback cb,
         // poll_load_progress comment for why we can't use async_call's
         // void* arg under MEMORY64).
         g_load_ctx.reset(new LoadCtx{this, std::move(cb), load_name});
-        emscripten_async_call(&poll_load_progress, nullptr, 100);
+        schedule_poll_load_progress(100);
         return;
 #else
         std::string err = "%load is only supported in the WASM build";

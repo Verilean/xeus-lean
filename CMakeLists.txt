@@ -298,7 +298,13 @@ ${_init_stub_decls}}
         # emscripten provides its own entry stub. Listing _main here
         # triggers "undefined exported symbol" since the user code
         # never defines it.
-        file(WRITE "${_sparkle_exports_file}" "[${_sparkle_csv}]")
+        # Also export _xlean_poll_load_progress so the JS-side setTimeout
+        # in the %load magic can call it as Module._xlean_poll_load_progress.
+        # We schedule the poll through JS instead of
+        # emscripten_async_call because the latter's `void* arg`
+        # wrapper crashes under -sMEMORY64=1.
+        file(WRITE "${_sparkle_exports_file}"
+             "[${_sparkle_csv},_xlean_poll_load_progress]")
         # LINK_FLAGS does NOT evaluate generator expressions, so use
         # the concrete archive path instead of $<TARGET_FILE:...>.
         set(_sparkle_archive "${CMAKE_BINARY_DIR}/libsparkle_wasm.a")
