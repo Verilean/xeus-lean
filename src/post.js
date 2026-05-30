@@ -559,10 +559,33 @@ Module.preRun.push(function () {
     var names = Object.keys(mods);
     var assetBase = manifest.baseUrl || baseForAssets;
     var written = 0;
+
+    // Pre-compute totals so the progress callback can show "N/total"
+    // and "X% of <total MB>" without re-walking the manifest.
+    var totalBytes = 0;
+    for (var ti = 0; ti < names.length; ti++) {
+      totalBytes += (mods[names[ti]].size | 0);
+    }
+    var bytesSoFar = 0;
+    function fmtMB(b) { return Math.round(b / 1024 / 1024); }
+
     for (var ni = 0; ni < names.length; ni++) {
       var name = names[ni];
+      var info = mods[name];
+      var sizeMB = fmtMB(info.size | 0);
+      var pct = totalBytes > 0
+        ? Math.round((bytesSoFar / totalBytes) * 100)
+        : 0;
       onProgress('loading-module', {
-        name: name, index: ni, total: names.length, info: mods[name],
+        name: name,
+        index: ni,
+        total: names.length,
+        info: info,
+        // Human-readable progress fragment the cell magic appends:
+        //   "fetching Mathlib.Algebra (175 MB) [3/44 — 18%]"
+        humanProgress:
+          name + ' (' + sizeMB + ' MB) [' +
+          (ni + 1) + '/' + names.length + ' — ' + pct + '%]',
       });
       // loadModule() reads ASSET_BASE from its enclosing scope, which
       // points at the startup manifest's location.  For an on-demand
@@ -577,6 +600,7 @@ Module.preRun.push(function () {
       } finally {
         ASSET_BASE = prev;
       }
+      bytesSoFar += (info.size | 0);
     }
     onProgress('done', { written: written, modules: names.length });
     Module._xleanSyncExpandedCache = false;

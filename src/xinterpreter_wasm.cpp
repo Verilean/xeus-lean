@@ -352,7 +352,12 @@ EM_JS(void, xlean_load_manifest_kick, (const char* name), {
     Module.loadManifestAsync(n, {
         onProgress: function (stage, info) {
             var line = '[%load ' + n + '] ' + stage;
-            if (info && info.name) line += ' ' + info.name;
+            // loadManifestAsync produces a `humanProgress` field for the
+            // per-chunk stage with bytes/total/percent already formatted;
+            // prefer it over the raw module name so the cell shows
+            // "fetching Mathlib.Algebra (175 MB) [3/44 - 18%]".
+            if (info && info.humanProgress) line += ' ' + info.humanProgress;
+            else if (info && info.name) line += ' ' + info.name;
             Module.__loadProgressQueue.push(line + '\n');
         },
     }).then(function (r) {
