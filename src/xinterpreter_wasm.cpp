@@ -371,7 +371,9 @@ EM_JS(char*, xlean_load_drain, (void), {
     if (!q || q.length === 0) return 0;
     var line = q.shift();
     var len = lengthBytesUTF8(line) + 1;
-    var ptr = _malloc(len);
+    // -sMEMORY64=1: _malloc expects a BigInt size and returns a
+    // BigInt pointer; EM_JS doesn't synthesise the wrapping.
+    var ptr = _malloc(BigInt(len));
     stringToUTF8(line, ptr, len);
     return ptr;
 });
@@ -383,10 +385,10 @@ EM_JS(int, xlean_load_status, (void), {
 
 // Caller frees the returned string; null when no error message.
 EM_JS(char*, xlean_load_fail_msg, (void), {
-    var s = Module.__loadFailMsg || '';
+    var s = Module.__loadFailMsg || "";
     if (!s) return 0;
     var len = lengthBytesUTF8(s) + 1;
-    var ptr = _malloc(len);
+    var ptr = _malloc(BigInt(len));
     stringToUTF8(s, ptr, len);
     return ptr;
 });
