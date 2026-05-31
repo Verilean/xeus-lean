@@ -52,6 +52,19 @@ lean_exe «convert-test» where
   srcDir := "src"
   supportInterpreter := true
 
+-- MCP server: lets a local Claude Code instance drive notebook
+-- editing, Lean evaluation, and project ops against a running xlean
+-- session (or, in v0, against a freshly-spawned `lean --stdin`).
+-- See `src/MCP/` for the protocol + tool implementation.
+lean_lib MCP where
+  srcDir := "src"
+  roots  := #[`XLean.MCP]
+
+lean_exe «xlean-mcp» where
+  root := `MCPMain
+  srcDir := "src"
+  supportInterpreter := true
+
 /--
 Read `XEUS_LEAN_EXTRA_LIBS` from the process environment at lakefile-load
 time. Whitespace-separated tokens, each appended verbatim to xlean's link
