@@ -69,7 +69,7 @@ picture, some numerical play, then the formal Lean statement.
 |---|---|---|
 | **Lean as a language** | [`docs/tutorial/md/`](docs/tutorial/md/README.md) | Ch00–Ch16: setup, values, pattern matching, types, lists, arrays, strings, hashmaps, error handling, IO, file I/O, processes, sockets, concurrency, JSON, macros, type-level programming with Haskell comparisons. |
 | **Lean as math** | [`docs/math-visual/`](docs/math-visual/README.md) | Visual-Complex-Analysis-style chapters: conformal maps, Möbius, Riemann sphere, contour integrals, manifolds, category theory, optimal transport, etc. Each chapter: a picture → numerical exploration → a formal Mathlib statement → "try it yourself" exercises. |
-| **Operating xeus-lean** | [`docs/tutorials/`](docs/tutorials/) | Browser / Docker / source-build instructions and a troubleshooting guide. |
+| **Operating xeus-lean** | [`docs/tutorials/`](docs/tutorials/) | Browser / Docker / source-build instructions, MCP setup, troubleshooting. |
 | **Authoring tutorials** | [`docs/Convert.md`](docs/Convert.md) | The `xlean-convert` CLI that turns one Markdown source into `.ipynb`, runnable `.lean`, static HTML site, or output-baked Markdown. |
 
 ### Quick-start install matrix
@@ -176,6 +176,63 @@ size of the default-no-Mathlib site: ~280 MB compressed.
 - **Docs pipeline** — [`docs/Convert.md`](docs/Convert.md): one
   Markdown source → `.ipynb`, runnable `.lean:percent`, a static HTML
   site, or evaluated-output-baked Markdown.
+- **MCP server** (`xlean-mcp`) — a stdio Model Context Protocol
+  server so a local agent (Claude Code, etc.) can drive the kernel
+  programmatically.  See the next section.
+
+## MCP server
+
+`xlean-mcp` is an MCP 2024-11-05 server that exposes Lean evaluation,
+notebook editing, and project-search operations to any MCP-compatible
+host.  Build it once and point your host at it:
+
+```bash
+lake build xlean-mcp
+# binary lives at .lake/build/bin/xlean-mcp
+```
+
+Tools in v0.2 (`tools/list` returns them in the order below):
+
+| Tool             | Purpose |
+|------------------|---------|
+| `lean_eval`      | Evaluate a Lean snippet, return `#eval` / `#check` / error output |
+| `file_read`      | Read a file (optional 1-indexed `offset` + `limit`) |
+| `file_write`     | Overwrite a file with given content |
+| `project_search` | `ripgrep` wrapper (pattern + optional `path`, `glob`) |
+| `notebook_read`  | Parse `.ipynb` and return `[{index, cell_type, source}]` |
+| `notebook_edit`  | Replace / insert / delete a single notebook cell |
+
+Wire it into Claude Code by adding the binary to your MCP config:
+
+```json
+{
+  "mcpServers": {
+    "xlean": {
+      "command": "/abs/path/to/xeus-lean/.lake/build/bin/xlean-mcp"
+    }
+  }
+}
+```
+
+Then in chat:
+
+> Read `notebooks/mathlib-demo.ipynb`, change the third cell to import
+> `Mathlib.Tactic.Ring`, and write it back.
+
+The agent can read the file, edit the cell, write it back, and
+verify the result — all without leaving the protocol.
+
+Caveats — this is v0.2:
+
+- `lean_eval` shells out to a fresh `lean` per call; **no environment
+  carries between calls** (definitions in one call aren't visible in
+  the next).  Sharing the REPL env across tool calls is on the
+  roadmap (#63).
+- `project_search` runs in the server's working directory, which is
+  whatever the MCP host launched it from.  If you want a specific
+  workspace root, launch the server from there.
+- No tools yet for the *running browser* JupyterLite session — that
+  needs a service-worker shim in the WASM site (#64).
 
 ## Architecture sketch
 
