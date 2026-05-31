@@ -3,6 +3,7 @@ build/
 build-cmake/
 wasm-build/
 .lake/
+.claude/
 /repl/
 *.o
 *.a
