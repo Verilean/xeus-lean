@@ -1,7 +1,7 @@
 # Tutorials
 
-Three ways to run xeus-lean, ordered from "I just want to click around"
-to "I want to build it from source on my own machine."
+Four ways to run xeus-lean, ordered from "I just want to click around"
+to "I want to wire it into my own agent."
 
 | Path | Time to first cell | Best for |
 |------|-------------------:|----------|
@@ -9,6 +9,7 @@ to "I want to build it from source on my own machine."
 | **[Docker (native kernel)](docker-native.md)** | 10 min | Local Jupyter with Sparkle / Hesper |
 | **[Docker (WASM kernel)](docker-wasm.md)** | 30 min | Reproducing the JupyterLite build |
 | **[From source (native)](native-from-source.md)** | 30 min | Hacking on the kernel itself |
+| **[MCP server (`xlean-mcp`)](mcp-server.md)** | 5 min | Letting Claude Code / other agents drive the kernel |
 
 Pick one. Each tutorial is self-contained — you don't need to read the
 others first.
