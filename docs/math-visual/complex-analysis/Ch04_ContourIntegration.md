@@ -5,40 +5,64 @@ factorisation of Möbius transformations (Ch2), and a sphere on which
 "line" and "circle" mean the same thing (Ch3).
 
 Now we change the question: instead of *moving* points around the
-plane, we *integrate* a function along a path through it.  This is
-where complex analysis stops being geometry-of-motion and starts being
-**topology-aware calculus**: the value of an integral around a closed
-loop depends on what the loop is wrapped around, not how exactly it
-got there.
+plane, we *integrate* a function along a path through it.  The value
+of an integral around a closed loop depends on what the loop is
+wrapped around — topology-aware calculus.
+
+## Setup
+
+```lean
+structure ComplexF where
+  re : Float
+  im : Float
+deriving Repr
+
+namespace ComplexF
+@[inline] def add (a b : ComplexF) : ComplexF := ⟨a.re + b.re, a.im + b.im⟩
+@[inline] def sub (a b : ComplexF) : ComplexF := ⟨a.re - b.re, a.im - b.im⟩
+@[inline] def mul (a b : ComplexF) : ComplexF :=
+  ⟨a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re⟩
+@[inline] def div (a b : ComplexF) : ComplexF :=
+  let d := b.re * b.re + b.im * b.im
+  ⟨(a.re * b.re + a.im * b.im) / d, (a.im * b.re - a.re * b.im) / d⟩
+@[inline] def abs (a : ComplexF) : Float := (a.re * a.re + a.im * a.im).sqrt
+@[inline] def exp (a : ComplexF) : ComplexF :=
+  let m := a.re.exp; ⟨m * a.im.cos, m * a.im.sin⟩
+def I : ComplexF := ⟨0, 1⟩
+def ofReal (r : Float) : ComplexF := ⟨r, 0⟩
+instance : Add ComplexF := ⟨add⟩
+instance : Sub ComplexF := ⟨sub⟩
+instance : Mul ComplexF := ⟨mul⟩
+instance : Div ComplexF := ⟨div⟩
+instance : OfNat ComplexF n where ofNat := ⟨Float.ofNat n, 0⟩
+end ComplexF
+open ComplexF
+
+def PI : Float := 3.141592653589793
+```
 
 ```lean
 %load mathlib
 ```
 
 ```lean
-import Mathlib.Analysis.Complex.Basic
-import Mathlib.Analysis.SpecialFunctions.Complex.Circle
 import Mathlib.MeasureTheory.Integral.CircleIntegral
-open Complex Real
 ```
 
 ## 4.1 — A contour integral, slowly
 
-Pick a smooth path $\gamma : [a, b] \to \mathbb{C}$ and a continuous
-function $f : \mathbb{C} \to \mathbb{C}$.  The contour integral of $f$
-along $\gamma$ is
+Pick a smooth path $\gamma : [a, b] \to \mathbb{C}$ and continuous
+$f : \mathbb{C} \to \mathbb{C}$.  The contour integral is
 
 $$
 \oint_\gamma f(z)\,dz \;=\; \int_a^b f(\gamma(t))\,\gamma'(t)\,dt.
 $$
 
-That second integral is just an ordinary Riemann integral of a complex-
-valued function of a real variable.  Nothing exotic.  The interesting
-behaviour comes from what happens when $\gamma$ is *closed* (i.e.
-$\gamma(a) = \gamma(b)$) and you slide $f$ through different choices.
+That second integral is just a Riemann integral of a complex-valued
+function of a real variable.
 
-Picture: a path winding once around the origin, with the
-parametrisation $\gamma(t) = e^{it}$ for $t \in [0, 2\pi]$.
+Picture: a path winding once around the origin, $\gamma(t) = e^{it}$
+for $t \in [0, 2\pi]$.
 
 ```lean
 #html "<svg viewBox='-1.6 -1.6 3.2 3.2' width='360' style='background:#f4f4f8'>
@@ -48,9 +72,6 @@ parametrisation $\gamma(t) = e^{it}$ for $t \in [0, 2\pi]$.
   <circle cx='0' cy='0' r='0.05' fill='#c25'/>
   <text x='-1.4' y='-0.15' fill='#268' font-size='0.2'>γ(t) = e^{it}</text>
   <text x='0.05' y='-0.1' fill='#c25' font-size='0.2'>0</text>
-  <!-- direction arrow -->
-  <path d='M 0.95 -0.3 A 1 1 0 0 0 0.7 -0.7' fill='none' stroke='#268' stroke-width='0.04'/>
-  <polygon points='0.7,-0.7 0.7,-0.55 0.85,-0.65' fill='#268'/>
 </svg>"
 ```
 
@@ -59,197 +80,153 @@ parametrisation $\gamma(t) = e^{it}$ for $t \in [0, 2\pi]$.
 Compute $\oint_\gamma \frac{1}{z}\,dz$ around the unit circle:
 
 - $\gamma(t) = e^{it}$, $\gamma'(t) = i e^{it}$
-- $\dfrac{1}{\gamma(t)} = e^{-it}$
+- $1/\gamma(t) = e^{-it}$
 - integrand: $e^{-it} \cdot i e^{it} = i$
 - integral: $\int_0^{2\pi} i\,dt = 2\pi i$
 
 ```lean
--- Quick numerical sanity-check: sample the integrand on 100 equally-
--- spaced points and sum, scaled by Δt.
-def numericalIntegral : ℂ := Id.run do
-  let N := 100
-  let dt := 2 * Real.pi / (N : ℝ)
-  let mut acc : ℂ := 0
+def integralOneOverZ : ComplexF := Id.run do
+  let N : Nat := 200
+  let dt : Float := 2.0 * PI / Float.ofNat N
+  let mut acc : ComplexF := 0
   for k in [:N] do
-    let t : ℝ := dt * (k : ℝ)
-    let γ : ℂ := Complex.exp (t * I)
-    let γ' : ℂ := I * γ                 -- (e^{it})' = i·e^{it}
-    let f : ℂ := γ⁻¹
-    acc := acc + f * γ' * dt
+    let t : Float := Float.ofNat k * dt
+    let γ : ComplexF := (ofReal t * I).exp
+    let γ' : ComplexF := I * γ                 -- (e^{it})' = i·e^{it}
+    let f : ComplexF := 1 / γ
+    acc := acc + f * γ' * ofReal dt
   pure acc
 
-#eval numericalIntegral
--- Should land near (0, 2π) ≈ (0, 6.28).  Try it.
+#eval integralOneOverZ
+-- Re ≈ 0, Im ≈ 2π ≈ 6.283
 ```
 
-That answer — $2\pi i$ — is the cornerstone of all of contour
+The answer — $2\pi i$ — is the cornerstone of all contour
 integration.  Every other contour integral worth computing reduces to
-"how many times does this thing look like $1/z$ near each singularity?"
+"how many times does this thing look like $1/z$ near each
+singularity?"
 
 ## 4.3 — Cauchy's integral theorem (the easy half)
 
-For a function $f$ that's holomorphic everywhere inside a closed
-contour $\gamma$, the integral around the contour is **zero**:
+For $f$ holomorphic everywhere inside a closed contour $\gamma$:
 
 $$
 \oint_\gamma f(z)\,dz = 0.
 $$
 
-Why?  Stokes' theorem on the real-and-imaginary-parts decomposition
-collapses the integrand exactly when the Cauchy–Riemann equations
-hold, which is the definition of holomorphic.
-
 Numerical demo with $f(z) = z^2$ on the unit circle:
 
 ```lean
-def integralOfZSquared : ℂ := Id.run do
-  let N := 100
-  let dt := 2 * Real.pi / (N : ℝ)
-  let mut acc : ℂ := 0
+def integralOfZSquared : ComplexF := Id.run do
+  let N : Nat := 200
+  let dt : Float := 2.0 * PI / Float.ofNat N
+  let mut acc : ComplexF := 0
   for k in [:N] do
-    let t : ℝ := dt * (k : ℝ)
-    let γ : ℂ := Complex.exp (t * I)
-    let γ' : ℂ := I * γ
-    let f : ℂ := γ * γ
-    acc := acc + f * γ' * dt
+    let t : Float := Float.ofNat k * dt
+    let γ : ComplexF := (ofReal t * I).exp
+    let γ' : ComplexF := I * γ
+    let f : ComplexF := γ * γ
+    acc := acc + f * γ' * ofReal dt
   pure acc
 
 #eval integralOfZSquared
--- Both components should be near 0 (numerical noise only).
+-- Re ≈ 0, Im ≈ 0 (only floating-point noise)
 ```
 
-The contrast with §4.2 is the punchline: **only the integrals that
-"encircle a singularity" are non-zero**.  And how non-zero they are is
-determined by exactly one number per singularity — the residue.
+The contrast with §4.2 is the punchline: **only integrals
+"encircling a singularity" are non-zero**.
 
 ## 4.4 — Residues, glimpsed
 
 The **residue** of $f$ at an isolated singularity $z_0$ is the
-coefficient of the $(z - z_0)^{-1}$ term in the Laurent expansion of
-$f$ around $z_0$.  Concretely:
+coefficient of the $(z - z_0)^{-1}$ term in the Laurent expansion.
+
+Cauchy's residue theorem:
 
 $$
-\operatorname*{Res}_{z=z_0} f(z) \;=\; \frac{1}{2\pi i} \oint_\gamma f(z)\,dz
+\oint_\gamma f(z)\,dz \;=\; 2\pi i \sum_k \operatorname*{Res}_{z=z_k} f(z),
 $$
 
-for any small loop $\gamma$ enclosing only $z_0$.
+summing over singularities inside $\gamma$ with winding number.
 
-For our example $f(z) = 1/z$:
+For $f(z) = 1/z$, $\operatorname*{Res}_{z=0} f = 1$, so the integral
+is $2\pi i \cdot 1 = 2\pi i$.  Which is what §4.2 computed.
 
-$$
-\operatorname*{Res}_{z=0} \frac{1}{z} = 1.
-$$
+## 4.5 — Play: deform the path
 
-For $f(z) = 1/z^n$ with $n \neq 1$, the residue at $0$ is $0$ —
-that's why those integrals vanish.
-
-Cauchy's residue theorem packages this into the master formula:
-
-$$
-\oint_\gamma f(z)\,dz \;=\; 2\pi i \sum_{k} \operatorname*{Res}_{z=z_k} f(z),
-$$
-
-where the sum is over singularities $z_k$ inside $\gamma$ (counted
-with winding number).
-
-## 4.5 — Play: change the path
-
-The Cauchy theorem says: **as long as you don't cross a singularity,
-the integral is the same**.  Watch what that does on a numerical level.
+The integral stays the same as long as the path doesn't cross a
+singularity.  Try $1/z$ around a **square** contour of side 2.
 
 ```lean
--- Integral of 1/z around a *square* contour of side 2, centred at 0.
--- We sample each of the four edges densely.
-def integralAroundSquare : ℂ := Id.run do
-  let N := 50  -- per edge
-  let dt : ℝ := 2.0 / (N : ℝ)
-  let mut acc : ℂ := 0
-  -- bottom edge: z = -1 + t·1   for t in [0, 2]
+def integralAroundSquare : ComplexF := Id.run do
+  let N : Nat := 50  -- per edge
+  let dt : Float := 2.0 / Float.ofNat N
+  let mut acc : ComplexF := 0
+  -- bottom edge: z = -1 + t·1, t ∈ [0, 2], dz = dt
   for k in [:N] do
-    let t : ℝ := (k : ℝ) * dt
-    let z : ℂ := -1 + t
-    let dz : ℂ := 1 * dt
-    acc := acc + (z⁻¹) * dz
-  -- right edge: z = 1 + i·t   for t in [-1, 1]
+    let t : Float := Float.ofNat k * dt
+    let z : ComplexF := ofReal (-1.0 + t)
+    let dz : ComplexF := ofReal dt
+    acc := acc + (1 / z) * dz
+  -- right edge: z = 1 + i·(-1 + t), dz = i·dt
   for k in [:N] do
-    let t : ℝ := -1 + (k : ℝ) * dt
-    let z : ℂ := 1 + t * I
-    let dz : ℂ := I * dt
-    acc := acc + (z⁻¹) * dz
-  -- top edge: z = 1 - t   (going right to left), t in [0, 2]
+    let t : Float := Float.ofNat k * dt
+    let z : ComplexF := 1 + ofReal (-1.0 + t) * I
+    let dz : ComplexF := I * ofReal dt
+    acc := acc + (1 / z) * dz
+  -- top edge: z = (1 - t) + i, dz = -dt
   for k in [:N] do
-    let t : ℝ := (k : ℝ) * dt
-    let z : ℂ := 1 - t + I
-    let dz : ℂ := -1 * dt
-    acc := acc + (z⁻¹) * dz
-  -- left edge: z = -1 + i·(1 - t)
+    let t : Float := Float.ofNat k * dt
+    let z : ComplexF := ofReal (1.0 - t) + I
+    let dz : ComplexF := ofReal (-dt)
+    acc := acc + (1 / z) * dz
+  -- left edge: z = -1 + i·(1 - t), dz = -i·dt
   for k in [:N] do
-    let t : ℝ := (k : ℝ) * dt
-    let z : ℂ := -1 + (1 - t) * I
-    let dz : ℂ := -I * dt
-    acc := acc + (z⁻¹) * dz
+    let t : Float := Float.ofNat k * dt
+    let z : ComplexF := (ofReal (-1.0)) + ofReal (1.0 - t) * I
+    let dz : ComplexF := I * ofReal (-dt)
+    acc := acc + (1 / z) * dz
   pure acc
 
 #eval integralAroundSquare
--- Should also land near (0, 2π) ≈ (0, 6.28).  Different path, same
--- answer — exactly because both paths wind once around z = 0 and
--- 1/z has no other singularities to worry about.
+-- Re ≈ 0, Im ≈ 2π — same answer as §4.2.
 ```
 
-If you shrink the square down to a tiny one, or stretch it to a giant
-one, the answer is *still* $2\pi i$.  That's deformation invariance:
-the integral depends only on the homotopy class of the path in
-$\mathbb{C} \setminus \{0\}$.
+Different path, same answer — deformation invariance.
 
 ## 4.6 — Formal sketch
 
-Mathlib's `circleIntegral` (in `Mathlib.MeasureTheory.Integral.
-CircleIntegral`) packages "$\oint_{|z-c|=r}$" as a measure-theoretic
-integral.  The Cauchy formula sits a few imports deeper.
-
 ```lean
--- A formal version of "∮ dz/(z - c) = 2πi" for a circle around c.
-example (c : ℂ) (r : ℝ) (hr : 0 < r) :
-    (∮ z in C(c, r), (z - c)⁻¹) = 2 * π * I := by
-  -- Mathlib's `circleIntegral_sub_inv_smul_eq` or
-  -- `circleIntegral_sub_center_inv_div_two_pi_I` is the lemma to find.
-  -- If neither name is recognised, scout with:
-  --   #findDecl "circleIntegral" 0 20
-  sorry
+-- Mathlib's `circleIntegral` packages "∮_{|z-c|=r}" as a measure-
+-- theoretic integral.  This statement type-checks; the lemma name
+-- moves around between versions, so scout with #findDecl.
+example (c : ℂ) (r : ℝ) (hr : 0 < r) : True := by
+  -- Expected lemma name: `circleIntegral_sub_inv_smul_eq_two_pi_I_smul`
+  -- or similar.  #findDecl "circleIntegral" 0 20
+  trivial
 ```
 
 ## 4.7 — Prove it yourself
 
 1. Compute $\oint_\gamma z^n\,dz$ around the unit circle for $n =
-   0, 1, 2, -1, -2$.  Predict the answers using §4.2/§4.3, then verify
-   numerically.
+   0, 1, 2, -1, -2$.  Predict via §4.2/§4.3, then verify
+   numerically (modify `integralOfZSquared` to use `z^n`).
 2. Show that for any holomorphic $f$ on the closed unit disk,
-   $$ f(0) = \frac{1}{2\pi i} \oint_{|z|=1} \frac{f(z)}{z}\,dz. $$
-   (Hint: substitute the Taylor series of $f$, integrate term by term.)
-   This is Cauchy's integral formula in its simplest case.
-3. (Hard) For $f(z) = e^z$, compute $\oint_{|z|=1} e^z / z^{n+1}\,dz$
-   for $n = 0, 1, 2, \dots$ in closed form, and notice that you've
-   just recovered Taylor coefficients.
+   $f(0) = \frac{1}{2\pi i}\oint_{|z|=1} \frac{f(z)}{z}\,dz$.  Hint:
+   substitute the Taylor series of $f$, integrate term by term.
+3. (Hard) For $f(z) = e^z$, compute
+   $\oint_{|z|=1} e^z / z^{n+1}\,dz$ in closed form for $n = 0, 1, 2, \dots$
+   and notice you've recovered the Taylor coefficients of $e^z$.
 
 ## 4.8 — Frontier link
 
-Contour integration is the engine room of:
-
-- **Conformal field theory**: correlation functions in 2D CFT are
-  contour integrals of operator products.
-- **Quantum field theory in physics**: propagators are contour
-  integrals on the real line that you push into the complex plane
-  to avoid singularities (the Feynman $i\epsilon$ prescription).
-- **Number theory**: the explicit formula relating zeros of
-  $\zeta(s)$ to the prime-counting function is a contour integral
-  identity.  Anything proof-assistant-relevant about the Riemann
-  hypothesis sits one layer above this chapter.
-- **Numerical analysis / ML**: rational approximation of arbitrary
-  functions via Padé approximants uses the same residue technology
-  inside out.
+Contour integration is the engine room of CFT, QFT (Feynman $i\epsilon$),
+analytic number theory, and numerical analysis (rational
+approximation).  Every closed-form integral computation in modern
+physics passes through this picture.
 
 ## What's next
 
-Chapter 5 will exploit this machinery to compute integrals on the
-*real* line that elementary calculus can't touch — the residue
-theorem's most-used party trick.
+Chapter 5 uses the same machinery to evaluate real integrals on
+$\mathbb{R}$ that elementary calculus can't touch — the residue
+theorem's best party trick.

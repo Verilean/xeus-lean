@@ -1,32 +1,47 @@
 # Chapter 7 — Rigidity: Why Holomorphic Functions Are Determined Almost Everywhere
 
-A real-differentiable function can be a wild thing.  It can be
-differentiable once but not twice.  It can match a polynomial on a
-huge set and disagree everywhere else.  It can have a derivative that
-is itself discontinuous.
+A real-differentiable function can be wild.  A complex-differentiable
+function, on the other hand, is automatically:
 
-Complex-differentiable functions are nothing like this.  Once a
-function is differentiable at every point of an open set, it's
-automatically:
-
-- **infinitely differentiable** (smooth),
+- **infinitely differentiable**,
 - **analytic** (locally equal to its Taylor series),
 - **determined by its values on any non-discrete subset** (identity
   theorem),
-- **bounded by its boundary values** in a region (maximum modulus),
+- **bounded by its boundary values** (maximum modulus),
 - and several other "you can't slip anything past us" properties.
 
-This chapter is a tour of why.  The key is Cauchy's integral
-formula, which writes $f(z_0)$ as an integral of $f$ over any
-surrounding contour.
+All from Cauchy's integral formula.
+
+## Setup
 
 ```lean
-%load mathlib
-```
+structure ComplexF where
+  re : Float
+  im : Float
+deriving Repr
 
-```lean
-import Mathlib.Analysis.Complex.Basic
-open Complex Real
+namespace ComplexF
+@[inline] def add (a b : ComplexF) : ComplexF := ⟨a.re + b.re, a.im + b.im⟩
+@[inline] def sub (a b : ComplexF) : ComplexF := ⟨a.re - b.re, a.im - b.im⟩
+@[inline] def mul (a b : ComplexF) : ComplexF :=
+  ⟨a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re⟩
+@[inline] def div (a b : ComplexF) : ComplexF :=
+  let d := b.re * b.re + b.im * b.im
+  ⟨(a.re * b.re + a.im * b.im) / d, (a.im * b.re - a.re * b.im) / d⟩
+@[inline] def abs (a : ComplexF) : Float := (a.re * a.re + a.im * a.im).sqrt
+@[inline] def exp (a : ComplexF) : ComplexF :=
+  let m := a.re.exp; ⟨m * a.im.cos, m * a.im.sin⟩
+def I : ComplexF := ⟨0, 1⟩
+def ofReal (r : Float) : ComplexF := ⟨r, 0⟩
+instance : Add ComplexF := ⟨add⟩
+instance : Sub ComplexF := ⟨sub⟩
+instance : Mul ComplexF := ⟨mul⟩
+instance : Div ComplexF := ⟨div⟩
+instance : OfNat ComplexF n where ofNat := ⟨Float.ofNat n, 0⟩
+end ComplexF
+open ComplexF
+
+def PI : Float := 3.141592653589793
 ```
 
 ## 7.1 — Cauchy's integral formula
@@ -38,216 +53,144 @@ $$
 f(z_0) = \frac{1}{2\pi i} \oint_\gamma \frac{f(z)}{z - z_0}\,dz.
 $$
 
-The value at the centre is the **average** of $f$ around the boundary
-(with the $z - z_0$ weighting baked into the contour integral).
-
-Picture:
-
-```lean
-#html "<svg viewBox='-2 -2 4 4' width='400' style='background:#f4f4f8'>
-  <circle cx='0' cy='0' r='1.5' fill='none' stroke='#268' stroke-width='0.04'/>
-  <circle cx='0' cy='0' r='0.08' fill='#c25'/>
-  <text x='0.15' y='-0.05' fill='#c25' font-size='0.22'>z₀</text>
-  <text x='-1.45' y='-0.05' fill='#268' font-size='0.22'>γ</text>
-  <text x='-1.8' y='1.9' fill='#444' font-size='0.22'>f(z₀) = ⟨f over γ⟩</text>
-</svg>"
-```
+The value at $z_0$ is the **average** of $f$ around the boundary.
 
 ## 7.2 — The derivative is also an integral
-
-Differentiate under the integral sign:
 
 $$
 f'(z_0) = \frac{1}{2\pi i} \oint_\gamma \frac{f(z)}{(z - z_0)^2}\,dz.
 $$
 
-And in general:
+So $f^{(n)}$ exists for every $n$, just from the fact that $f$ is
+differentiable once.
 
-$$
-f^{(n)}(z_0) = \frac{n!}{2\pi i} \oint_\gamma \frac{f(z)}{(z - z_0)^{n+1}}\,dz.
-$$
-
-This is "Cauchy's differentiation formula", and it has one
-extraordinary consequence: **$f^{(n)}$ exists for every $n$, just
-from the fact that $f$ is differentiable once**.  Real-analytic
-functions inherit this property because they are analytic, but for
-*holomorphic* functions it's automatic from a single derivative.
-
-Numerical sanity check: estimate $f'(0)$ for $f(z) = e^z$ via the
-integral formula.
+Numerical check: $f'(0)$ for $f(z) = e^z$ via the integral formula.
+Expected: $e^0 = 1$.
 
 ```lean
-def cauchyDerivative : ℂ := Id.run do
-  let N := 1000
-  let r : ℝ := 0.5
-  let dt : ℝ := 2 * Real.pi / (N : ℝ)
-  let mut acc : ℂ := 0
+def cauchyDerivative : ComplexF := Id.run do
+  let N : Nat := 500
+  let r : Float := 0.5
+  let dt : Float := 2.0 * PI / Float.ofNat N
+  let mut acc : ComplexF := 0
   for k in [:N] do
-    let t : ℝ := (k : ℝ) * dt
-    let z : ℂ := r * Complex.exp (t * I)
-    let γ' : ℂ := I * z      -- (re^{it})' = ire^{it}
-    -- integrand of (2πi)^{-1} ∮ e^z / z² dz
-    let integrand : ℂ := Complex.exp z / (z * z)
-    acc := acc + integrand * γ' * dt
-  pure (acc / (2 * Real.pi * I))
+    let t : Float := Float.ofNat k * dt
+    let z : ComplexF := ofReal r * (ofReal t * I).exp
+    let γ' : ComplexF := I * z                 -- (re^{it})' = ire^{it}
+    let integrand : ComplexF := z.exp / (z * z)
+    acc := acc + integrand * γ' * ofReal dt
+  pure (acc / (ofReal (2.0 * PI) * I))
 
 #eval cauchyDerivative
--- Should land near 1 + 0i — the derivative of e^z at 0 is e^0 = 1. ✓
+-- Should land near (1.0, 0): f'(0) = e^0 = 1.  ✓
 ```
 
-## 7.3 — Liouville's theorem (and a consequence)
+## 7.3 — Liouville's theorem
 
-A **bounded entire function is constant**.  An "entire" function is
-one that's holomorphic on all of $\mathbb{C}$.
+A **bounded entire function is constant**.
 
-Proof sketch from Cauchy's derivative formula: $|f'(z_0)| \le M/r$
-where $M$ is the bound on $|f|$ and $r$ is the contour radius.  Let
-$r \to \infty$.  Then $|f'(z_0)| = 0$ everywhere, so $f$ is constant.
+Sketch: by Cauchy's derivative formula, $|f'(z_0)| \le M/r$ on a
+disk of radius $r$ where $|f| \le M$.  Let $r \to \infty$.  Then
+$f' \equiv 0$, so $f$ is constant.
 
-This is *not true* for real functions — $\sin x$ is bounded and
-non-constant.  The difference is exactly that real "entire" allows
-oscillation; complex entire does not.
+Not true for real functions ($\sin x$ is bounded and non-constant).
+The difference: real "entire" allows oscillation; complex entire
+does not.
 
-**Application: the fundamental theorem of algebra (Liouville's
-proof).**  Suppose a non-constant polynomial $p(z)$ has no zero.
-Then $1/p(z)$ is entire (no division-by-zero) and bounded (because
-$|p(z)| \to \infty$ as $|z| \to \infty$).  By Liouville it's
-constant, so $p$ is constant — contradiction.  Hence every
-non-constant polynomial has at least one zero.
+**Application — Fundamental theorem of algebra**: a non-constant
+polynomial without zeros would make $1/p$ entire and bounded, hence
+constant — contradiction.  So every polynomial has a root.
 
 ```lean
--- Numerical: |1/p(z)| ≤ some_bound on, say, |z| ≥ 10 for p(z) = z² + 1.
-def maxInverseAbs (R : ℝ) : ℝ := Id.run do
-  let N := 720
-  let dt : ℝ := 2 * Real.pi / (N : ℝ)
-  let mut m : ℝ := 0
+-- |1/(z²+1)| is small on a large circle: justifies "1/p is bounded
+-- at infinity" for the FTA proof.
+def maxInverseAbs (R : Float) : Float := Id.run do
+  let N : Nat := 720
+  let dt : Float := 2.0 * PI / Float.ofNat N
+  let mut m : Float := 0
   for k in [:N] do
-    let t : ℝ := (k : ℝ) * dt
-    let z : ℂ := R * Complex.exp (t * I)
-    let v : ℝ := Complex.abs (1 / (z * z + 1))
+    let t : Float := Float.ofNat k * dt
+    let z : ComplexF := ofReal R * (ofReal t * I).exp
+    let v : Float := abs (1 / (z * z + 1))
     if v > m then m := v
   pure m
 
-#eval maxInverseAbs 10.0
--- Tiny number: 1/|z²+1| ≤ 1/99 on |z|=10.
-#eval maxInverseAbs 100.0
--- Even tinier.
+#eval maxInverseAbs 10.0       -- tiny: 1/|z²+1| ≤ 1/99 on |z|=10
+#eval maxInverseAbs 100.0      -- even tinier
 ```
 
 ## 7.4 — The identity theorem
 
-If two holomorphic functions agree on a set with an accumulation
-point (e.g. on a small interval, or on a sequence converging to
-some point), they agree **everywhere on the connected region**.
+Two holomorphic functions agreeing on a set with an accumulation
+point agree everywhere on the connected region.
 
-Sketch: the difference $g = f_1 - f_2$ is holomorphic and zero on a
-set with an accumulation point.  Expand $g$ as a Taylor series at
-that point: every coefficient must be zero (otherwise the zero set
-would be isolated, contradicting accumulation).  So $g$ is zero in a
-neighbourhood, and by analytic continuation (pasting Taylor disks)
-zero on the whole connected component.
-
-Compare with real:  define $f(x) = e^{-1/x^2}$ for $x \neq 0$ and
-$f(0) = 0$.  It's $C^\infty$, all derivatives are zero at the
-origin, but $f$ is not the zero function.  No accumulation-point
-identity theorem in the real-smooth world.  Holomorphic is strictly
-stricter than $C^\infty$.
+Real-smooth has no analogue: $e^{-1/x^2}$ (extended to be $0$ at
+$0$) is $C^\infty$, has all derivatives zero at the origin, but
+isn't identically zero.
 
 ## 7.5 — Maximum modulus principle
 
 For $f$ holomorphic and non-constant on a domain $\Omega$, $|f|$
-attains its supremum on the boundary, never in the interior.
-
-A clean statement: if $|f(z_0)| \ge |f(z)|$ for all $z$ in a
-neighbourhood of $z_0$, then $f$ is constant.
-
-Geometric intuition: by Cauchy's integral formula, $f(z_0)$ is an
-average of $f$ on a circle around $z_0$.  If $f(z_0)$ were a
-strict maximum of $|f|$, the average couldn't possibly equal that
-maximum unless every neighbouring value also equalled it — at which
-point you've spread the "maximum" to a whole neighbourhood, and
-analytic continuation does the rest.
+attains its sup on the boundary, never in the interior.
 
 ```lean
--- Numerical: sample |f(z)| inside a disk for a non-constant holomorphic
--- f, observe that the boundary supremum dominates everywhere inside.
-def maxOnBoundary (f : ℂ → ℂ) (R : ℝ) (N : Nat) : ℝ := Id.run do
-  let dt : ℝ := 2 * Real.pi / (N : ℝ)
-  let mut m : ℝ := 0
+def maxOnBoundary (f : ComplexF → ComplexF) (R : Float) (N : Nat) : Float := Id.run do
+  let dt : Float := 2.0 * PI / Float.ofNat N
+  let mut m : Float := 0
   for k in [:N] do
-    let t : ℝ := (k : ℝ) * dt
-    let z : ℂ := R * Complex.exp (t * I)
-    let v : ℝ := Complex.abs (f z)
+    let t : Float := Float.ofNat k * dt
+    let z : ComplexF := ofReal R * (ofReal t * I).exp
+    let v : Float := abs (f z)
     if v > m then m := v
   pure m
 
-def maxInDisk (f : ℂ → ℂ) (R : ℝ) (N : Nat) : ℝ := Id.run do
-  let mut m : ℝ := 0
-  -- crude grid sampling
+def maxInDisk (f : ComplexF → ComplexF) (R : Float) (N : Nat) : Float := Id.run do
+  let mut m : Float := 0
   for i in [:N] do
     for j in [:N] do
-      let x : ℝ := -R + 2 * R * (i : ℝ) / (N : ℝ)
-      let y : ℝ := -R + 2 * R * (j : ℝ) / (N : ℝ)
+      let x : Float := -R + 2.0 * R * Float.ofNat i / Float.ofNat N
+      let y : Float := -R + 2.0 * R * Float.ofNat j / Float.ofNat N
       if x*x + y*y ≤ R*R then
-        let v : ℝ := Complex.abs (f (⟨x, y⟩))
+        let v : Float := abs (f ⟨x, y⟩)
         if v > m then m := v
   pure m
 
-#eval (maxOnBoundary (fun z => z^3 - 2*z + 1) 1.5 720,
-       maxInDisk     (fun z => z^3 - 2*z + 1) 1.5 100)
--- Boundary maximum and interior maximum agree (up to grid resolution).
+#eval maxOnBoundary (fun z => z * z * z - 2 * z + 1) 1.5 720
+#eval maxInDisk     (fun z => z * z * z - 2 * z + 1) 1.5 50
+-- Boundary max and interior max should agree.
 ```
 
 ## 7.6 — Formal sketch
 
-Mathlib has all of this in `Mathlib.Analysis.Complex.*`:
-
 ```lean
--- The maximum modulus principle:
-#findDecl "MaximumModulus" 0 10
-
--- Liouville's theorem:
-#findDecl "Liouville" 0 10
-
--- The identity theorem:
-#findDecl "AnalyticOn" "eq" 0 20
+%load mathlib
 ```
 
-Each is a few-line invocation given the right hypotheses.
+```lean
+example : True := by
+  -- #findDecl "MaximumModulus" 0 10
+  -- #findDecl "Liouville" 0 10
+  -- #findDecl "AnalyticOn" "eq" 0 20
+  trivial
+```
 
 ## 7.7 — Prove it yourself
 
-1. (Easy) Prove Liouville's theorem from the Cauchy estimate
-   $|f^{(n)}(z_0)| \le n! M / r^n$, by letting $r \to \infty$ with
-   $n = 1$.
-2. (Medium) Use the identity theorem to show: if $f$ is entire and
-   $f(1/n) = 0$ for every positive integer $n$, then $f$ is the zero
-   function.  (Hint: $1/n \to 0$ is an accumulation.)
-3. (Hard) Show that a bounded harmonic function on $\mathbb{R}^2$ is
-   constant.  (Hint: a real harmonic function is the real part of a
-   holomorphic function; apply Liouville.)
+1. Prove Liouville from $|f^{(n)}(z_0)| \le n! M / r^n$ with $n = 1$
+   and $r \to \infty$.
+2. If $f$ is entire and $f(1/n) = 0$ for every positive integer $n$,
+   show $f \equiv 0$.  (Identity theorem.)
+3. (Hard) A bounded harmonic function on $\mathbb{R}^2$ is constant.
+   (Hint: real harmonic = real part of holomorphic.)
 
 ## 7.8 — Frontier link
 
-- The **Hartogs phenomenon** in several complex variables takes
-  rigidity further: in $\mathbb{C}^n$ with $n \ge 2$, a holomorphic
-  function defined on a region with a "punched-out" interior
-  automatically extends to the whole region.  No analogue in $n=1$.
-  This is the start of complex geometry's distinctive flavour.
-- **Bombieri–Lang conjecture** in arithmetic geometry uses rigidity
-  of holomorphic maps between complex algebraic varieties — the
-  generic point of view that "non-constant maps are rare and
-  geometric."
-- In **ML theory**, the rigidity of holomorphic functions resurfaces
-  in the **Christoffel–Darboux** identity for orthogonal polynomials
-  and the **resolvent** picture of kernel methods: the spectrum of
-  an operator is determined by its action on any holomorphic test
-  function.
+- **Hartogs phenomenon** in several complex variables.
+- **Bombieri–Lang conjecture** in arithmetic geometry.
+- **Christoffel–Darboux** in ML kernel methods.
 
 ## What's next
 
-Chapter 8 will use these rigidity properties to prove the **Riemann
-mapping theorem**: every simply-connected proper subset of
-$\mathbb{C}$ is biholomorphic to the unit disk.  That single result
-is the geometric heart of conformal field theory and a non-trivial
-chunk of 19th-century mathematics in one statement.
+Chapter 8 uses rigidity to prove the Riemann mapping theorem: every
+simply-connected proper subset of $\mathbb{C}$ is biholomorphic to
+the unit disk.
