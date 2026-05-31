@@ -19,37 +19,16 @@
 
 import XLean.MCP.Protocol
 import XLean.MCP.LeanSession
+import XLean.MCP.FileTools
+import XLean.MCP.NotebookTools
 
 namespace XLean.MCP
 
 open Lean (Json)
 
-/-- One tool's catalogue entry. -/
-structure ToolInfo where
-  name        : String
-  description : String
-  /-- JSON Schema for the tool's arguments object.  Keeping this as a
-      raw `Json` so we don't need to mirror the full schema vocabulary
-      in Lean types. -/
-  inputSchema : Json
-
-/-- Encode `ToolInfo` in the shape `tools/list` expects. -/
-def ToolInfo.toJson (t : ToolInfo) : Json :=
-  Json.mkObj
-    [ ("name",        t.name)
-    , ("description", t.description)
-    , ("inputSchema", t.inputSchema)
-    ]
-
-/-- The top-level tools/call wrapping.  MCP wraps a tool's payload in
-    `{ "content": [ { "type": "text", "text": "..." } ] }`; this is
-    the shape Claude Code expects to display in chat. -/
-def textContent (s : String) : Json :=
-  Json.mkObj
-    [ ("content", Json.arr #[
-        Json.mkObj [("type", "text"), ("text", s)]
-      ])
-    ]
+-- ToolInfo + textContent live in Protocol.lean so that the tool
+-- modules (FileTools, NotebookTools) can use them without a
+-- circular import.
 
 -- --------------------------------------------------------------------------
 -- Tool definitions
@@ -95,13 +74,16 @@ def tool_lean_eval (sess : IO.Ref LeanSession) : ToolInfo × Handler :=
     enumerate them. -/
 def builtinTools (sess : IO.Ref LeanSession) : List (ToolInfo × Handler) :=
   [ tool_lean_eval sess
-    -- More tools will land here:
+  , tool_file_read
+  , tool_file_write
+  , tool_project_search
+  , tool_notebook_read
+  , tool_notebook_edit
+    -- More to come:
     -- tool_lean_check sess,
-    -- tool_notebook_read,
-    -- tool_notebook_edit,
-    -- tool_project_search,
-    -- tool_file_read,
-    -- tool_file_write,
+    -- tool_notebook_evaluate,
+    -- tool_lake_build,
+    -- tool_lake_test,
   ]
 
 /-- Build a `Server` with the lifecycle + tool methods wired up. -/

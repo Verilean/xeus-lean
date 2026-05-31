@@ -61,6 +61,34 @@ def Response.toJson (r : Response) : Json :=
     touch the world (Lean session env, FS, etc.). -/
 abbrev Handler := Json → IO (Except (Int × String) Json)
 
+/-- One tool's catalogue entry.  Lives in Protocol so the tool-
+    implementation modules (FileTools, NotebookTools, …) can build
+    ToolInfo values without depending on Tools.lean. -/
+structure ToolInfo where
+  name        : String
+  description : String
+  /-- JSON Schema for the tool's arguments object.  Raw `Json` so we
+      don't need to mirror schema vocabulary in Lean types. -/
+  inputSchema : Json
+
+/-- Encode `ToolInfo` in the shape `tools/list` expects. -/
+def ToolInfo.toJson (t : ToolInfo) : Json :=
+  Json.mkObj
+    [ ("name",        t.name)
+    , ("description", t.description)
+    , ("inputSchema", t.inputSchema)
+    ]
+
+/-- MCP wraps a tool's payload in
+    `{ "content": [ { "type": "text", "text": "..." } ] }`; this is
+    the shape Claude Code expects to display in chat. -/
+def textContent (s : String) : Json :=
+  Json.mkObj
+    [ ("content", Json.arr #[
+        Json.mkObj [("type", "text"), ("text", s)]
+      ])
+    ]
+
 /-- The server is a registry of method name → handler. -/
 structure Server where
   handlers : Std.HashMap String Handler := {}

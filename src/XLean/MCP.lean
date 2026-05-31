@@ -10,4 +10,6 @@
 
 import XLean.MCP.Protocol
 import XLean.MCP.LeanSession
+import XLean.MCP.FileTools
+import XLean.MCP.NotebookTools
 import XLean.MCP.Tools
