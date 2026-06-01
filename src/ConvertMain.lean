@@ -259,10 +259,27 @@ private def runSite (opts : Opts) : IO UInt32 := do
                    some (nf, nt)
                  else none
     let sidebar := Convert.renderSidebar opts.title toc (some fname)
+    -- Build the per-chapter JupyterLite URL.  Three shapes of base
+    -- are supported so the caller can park notebooks in a subfolder:
+    --
+    --   1. `../lab/index.html`            → `?path=ChXX.ipynb`         (flat layout)
+    --   2. `../lab/index.html?path=sub/`  → `?path=sub/ChXX.ipynb`      (subfolder; trailing slash kept)
+    --   3. `../lab/index.html?foo=bar`    → `?foo=bar&path=ChXX.ipynb` (unrelated query already present)
+    --
+    -- Case 2 is what the CI script uses to keep one series' ipynb in
+    -- its own folder under the JupyterLite content tree.
     let jliteUrl? : Option String :=
       opts.jliteBase.map fun base =>
-        let sep := if base.contains '?' then "&" else "?"
-        s!"{base}{sep}path={stemOfHtml fname}.ipynb"
+        let stem := s!"{stemOfHtml fname}.ipynb"
+        if base.endsWith "path=" then
+          s!"{base}{stem}"
+        else if (base.splitOn "path=").length > 1 then
+          -- Already has a path= prefix; append the stem to whatever
+          -- folder the caller parked us in (must end in `/`).
+          s!"{base}{stem}"
+        else
+          let sep := if base.contains '?' then "&" else "?"
+          s!"{base}{sep}path={stem}"
     let html := Convert.cellsToHtml cells
                   (title := some title)
                   (prev? := prev?) (next? := next?)

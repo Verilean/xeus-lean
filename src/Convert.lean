@@ -1109,17 +1109,46 @@ private def cellEndPrefix : String := "===XLEAN-CELL-END "
     a typical setup script imports the necessary modules at the top
     of `header` (a verbatim prelude). -/
 def renderForEval (cells : Array Cell) (header : String := "import Display\n\n") : String := Id.run do
+  -- First pass: hoist every `import …` line from every code cell to
+  -- the top of the file.  Lean rejects mid-file imports, so chapters
+  -- that introduce a new Mathlib module partway through (which is
+  -- the natural way to write a tutorial — "let's now bring in
+  -- Mathlib.Analysis…") would otherwise fail with
+  --   error: invalid 'import' command, it must be used in the
+  --   beginning of the file
+  -- Hoisting is order-preserving: imports keep their original
+  -- relative order, so any module that depends on a sibling still
+  -- sees it loaded first.
+  let mut imports : Array String := #[]
+  let mut seen : Std.HashSet String := {}
+  for c in cells do
+    match c with
+    | .markdown _ => pure ()
+    | .code ls _ =>
+      for l in ls do
+        let trimmed := l.trim
+        if trimmed.startsWith "import " && !(seen.contains trimmed) then
+          imports := imports.push trimmed
+          seen := seen.insert trimmed
+
   let mut out := header
+  for imp in imports do
+    out := out ++ imp ++ "\n"
+  if !imports.isEmpty then
+    out := out ++ "\n"
+
+  -- Second pass: emit the rest of every cell, dropping the imports
+  -- we already hoisted.  Cell delimiters still fire so the output
+  -- splitter in attachEvalOutputs lines up with the original cells.
   let mut idx := 0
   for c in cells do
     match c with
-    | .markdown _ => pure ()  -- markdown cells produce no output
+    | .markdown _ => pure ()
     | .code ls _ =>
-      -- Inline the cell body verbatim.
       for l in ls do
-        out := out ++ l ++ "\n"
-      -- Then a delimiter `#eval` that flushes the Display buffer
-      -- and prints the end marker.
+        let trimmed := l.trim
+        if !(trimmed.startsWith "import ") then
+          out := out ++ l ++ "\n"
       out := out ++ s!"#eval show IO Unit from do\n"
                  ++ s!"  let mimes ← Display.drain\n"
                  ++ s!"  IO.print mimes\n"
