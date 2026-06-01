@@ -331,9 +331,20 @@ private def runEval (opts : Opts) : IO UInt32 := do
   let ec ← proc.wait
   if ec != 0 then
     IO.eprintln s!"lean --run failed (exit {ec})"
-    IO.eprintln stderr
-    -- Still try to attach whatever outputs we got, so the user
-    -- can see partial progress, but exit non-zero.
+    -- Lean often writes error messages to stdout (not stderr) for
+    -- `lean FILE` invocations because `#eval` traces go to stdout
+    -- alongside diagnostic ones.  Dump both streams so CI logs show
+    -- the real failure instead of an empty "exit 1".
+    if !stderr.isEmpty then
+      IO.eprintln "--- lean stderr ---"
+      IO.eprintln stderr
+    if !stdout.isEmpty then
+      IO.eprintln "--- lean stdout (often holds the actual error) ---"
+      IO.eprintln stdout
+    IO.eprintln "--- end lean output ---"
+    -- Also leave the temp file in place so a CI re-run can inspect
+    -- it; the deterministic /tmp/xlean-eval-<n>/Eval.lean path is
+    -- emitted in the "running: lean …" line above.
     pure ()
 
   let chunks := Convert.splitByCellEnd stdout
