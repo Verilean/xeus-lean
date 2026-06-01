@@ -1,0 +1,107 @@
+# Dockerfile.math-tester — native lean + Mathlib + xlean-convert.
+#
+# Used by the math-visual-tests CI job to run `xlean-convert --eval`
+# against every docs/math-visual/*/Ch*.md with real Mathlib oleans on
+# the LEAN_PATH.  Without this image the chapters that say
+# `import Mathlib.Analysis…` would fail to elaborate and the test
+# would degenerate into "did the md file parse".
+#
+# Cache strategy mirrors Dockerfile.docs-builder:
+#   - rebuild when lean-toolchain or scripts/Dockerfile change
+#   - tagged :latest + :<sha>
+#   - pulled (not rebuilt) by the math-visual-tests job
+#
+# Build cost: ~30-60 min cold (Mathlib compile via lake exe cache get),
+# ~3 min warm.  Size: ~3 GB (Mathlib oleans dominate).
+
+ARG LEAN_VERSION=v4.28.0
+FROM ubuntu:24.04
+
+ARG LEAN_VERSION
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl git build-essential python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+        | sh -s -- -y --default-toolchain ${LEAN_VERSION}
+ENV PATH=/root/.elan/bin:${PATH}
+
+# ----------------------------------------------------------------------
+# Mathlib bundle — same recipe as Dockerfile.mathlib, kept here so the
+# math-tester image is self-contained (Dockerfile.mathlib's `oleans`
+# scratch stage is opaque on its own).
+# ----------------------------------------------------------------------
+WORKDIR /opt/mathlib-bundle
+
+RUN echo "leanprover/lean4:${LEAN_VERSION}" > lean-toolchain
+RUN cat > lakefile.toml <<EOF
+name = "mathlib-bundle"
+defaultTargets = ["MathlibBundle"]
+
+[[lean_lib]]
+name = "MathlibBundle"
+
+[[require]]
+name = "mathlib"
+git  = "https://github.com/leanprover-community/mathlib4"
+rev  = "${LEAN_VERSION}"
+EOF
+RUN mkdir -p MathlibBundle && echo "import Mathlib" > MathlibBundle.lean
+RUN lake update
+RUN lake exe cache get || true
+RUN lake build Mathlib
+
+# ----------------------------------------------------------------------
+# Stage every olean we want on LEAN_PATH for the tests.  Same set of
+# dependencies as Dockerfile.mathlib.
+# ----------------------------------------------------------------------
+RUN set -eux; \
+    mkdir -p /opt/lean-path; \
+    for dep in mathlib aesop batteries importGraph proofwidgets plausible Qq LeanSearchClient Cli; do \
+      src=".lake/packages/${dep}/.lake/build/lib/lean"; \
+      if [ -d "$src" ]; then \
+        echo "[stage] $dep -> /opt/lean-path/"; \
+        cp -r "$src"/. /opt/lean-path/; \
+      else \
+        echo "[stage] skip $dep (no $src)"; \
+      fi; \
+    done; \
+    du -sh /opt/lean-path; \
+    find /opt/lean-path -maxdepth 1 -mindepth 1 -name '*.olean' | head -5
+
+# ----------------------------------------------------------------------
+# Build xlean-convert (host binary) + Display olean.  Display is the
+# only xeus-lean module the eval-mode shim imports; we copy its olean
+# into /opt/lean-path so the chapters' `#eval show IO Unit from do ...`
+# preamble resolves Display.drain.
+# ----------------------------------------------------------------------
+WORKDIR /opt/xeus-lean
+
+COPY lakefile.lean lake-manifest.json lean-toolchain ./
+COPY src/        ./src/
+COPY scripts/    ./scripts/
+COPY share/      ./share/
+COPY include/    ./include/
+COPY CMakeLists.txt ./
+
+RUN lake build Display xlean-convert
+
+RUN install -m 0755 .lake/build/bin/xlean-convert /usr/local/bin/xlean-convert && \
+    cp .lake/build/lib/lean/Display.olean /opt/lean-path/Display.olean
+
+# ----------------------------------------------------------------------
+# Default LEAN_PATH so callers can just `xlean-convert --eval …` and
+# have Display + Mathlib resolve.  The test script can append to it
+# if needed.
+# ----------------------------------------------------------------------
+ENV LEAN_PATH=/opt/lean-path
+
+WORKDIR /work
+
+CMD ["bash", "-lc", "\
+echo '=== math-tester image ==='; \
+echo 'lean:'; lean --version; \
+echo 'xlean-convert:'; xlean-convert --help | head -3; \
+echo 'olean count under LEAN_PATH:'; \
+find $LEAN_PATH -maxdepth 1 -name '*.olean' | wc -l"]

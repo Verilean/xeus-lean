@@ -43,8 +43,9 @@ jobs:
   changes:
     runs-on: ubuntu-latest
     outputs:
-      kernel: ${{ steps.filter.outputs.kernel }}
-      docs:   ${{ steps.filter.outputs.docs }}
+      kernel:      ${{ steps.filter.outputs.kernel }}
+      docs:        ${{ steps.filter.outputs.docs }}
+      math_tester: ${{ steps.filter.outputs.math_tester }}
     steps:
     - uses: actions/checkout@v4
     - name: Detect kernel vs docs changes
@@ -72,6 +73,18 @@ jobs:
             - 'docs/**'
             - 'notebooks/**'
             - 'README.md'
+          # math-tester rebuilds only when the Mathlib toolchain, the
+          # xlean-convert sources it ships, or the Dockerfile change.
+          # Plain docs edits reuse :latest.
+          math_tester:
+            - 'lean-toolchain'
+            - 'lakefile.lean'
+            - 'src/Convert.lean'
+            - 'src/ConvertMain.lean'
+            - 'src/Display.lean'
+            - 'src/Display/**'
+            - 'Dockerfile.math-tester'
+            - '.github/workflows/docs.yml'
 
   # ============================================================
   # kernel-image — build & push Dockerfile.docs-builder to ghcr.
@@ -135,6 +148,63 @@ jobs:
         push: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         cache-from: type=gha,scope=docs-builder
         cache-to: type=gha,mode=max,scope=docs-builder
+
+  # ============================================================
+  # math-tester-image — build & push Dockerfile.math-tester (native
+  # lean + Mathlib + xlean-convert).  Used by math-visual-tests.
+  # Rebuilds on lean-toolchain bump / Convert.lean edits, not on
+  # plain docs edits.
+  # ============================================================
+  math-tester-image:
+    needs: changes
+    if: |
+      needs.changes.outputs.math_tester == 'true' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Free disk space
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android \
+          /opt/ghc /opt/hostedtoolcache/CodeQL || true
+        df -h
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Compute lowercase image name
+      id: tag
+      run: |
+        owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
+        echo "image=ghcr.io/${owner}/xeus-lean-math-tester" >> $GITHUB_OUTPUT
+
+    - name: Log in to GHCR
+      if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build & (conditionally) push math-tester image
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: Dockerfile.math-tester
+        tags: |
+          ${{ steps.tag.outputs.image }}:latest
+          ${{ steps.tag.outputs.image }}:${{ github.sha }}
+        push: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        cache-from: type=gha,scope=math-tester
+        cache-to: type=gha,mode=max,scope=math-tester
 
   # ============================================================
   # docs-deploy — md → ipynb + static HTML + JupyterLite + Pages.
@@ -236,15 +306,16 @@ jobs:
         timeout: 600000
 
   # ============================================================
-  # math-visual-tests — execute every Ch*.md to make sure cells
-  # still run.  Same image as docs-deploy.
+  # math-visual-tests — execute every docs/math-visual/*/Ch*.md
+  # against real Mathlib oleans.  Uses the math-tester image so
+  # `import Mathlib.…` actually resolves.
   # ============================================================
   math-visual-tests:
-    needs: [changes, kernel-image]
+    needs: [changes, math-tester-image]
     if: |
       always() &&
       needs.changes.result == 'success' &&
-      (needs.kernel-image.result == 'success' || needs.kernel-image.result == 'skipped')
+      (needs.math-tester-image.result == 'success' || needs.math-tester-image.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -259,10 +330,10 @@ jobs:
       id: img
       run: |
         owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
-        if [ "${{ needs.kernel-image.result }}" = "success" ]; then
-          echo "ref=ghcr.io/${owner}/xeus-lean-docs-builder:${{ github.sha }}" >> $GITHUB_OUTPUT
+        if [ "${{ needs.math-tester-image.result }}" = "success" ]; then
+          echo "ref=ghcr.io/${owner}/xeus-lean-math-tester:${{ github.sha }}" >> $GITHUB_OUTPUT
         else
-          echo "ref=ghcr.io/${owner}/xeus-lean-docs-builder:latest" >> $GITHUB_OUTPUT
+          echo "ref=ghcr.io/${owner}/xeus-lean-math-tester:latest" >> $GITHUB_OUTPUT
         fi
 
     - name: Log in to GHCR (read)
@@ -272,7 +343,7 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Pull docs-builder image
+    - name: Pull math-tester image
       run: docker pull ${{ steps.img.outputs.ref }}
 
     - name: Run --eval on every math-visual chapter

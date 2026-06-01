@@ -15,22 +15,26 @@
 
 set -uo pipefail
 
-# `xlean-convert --eval` shells out to `lean`.  We need LEAN_PATH to
-# include the prebuilt olean tree so Display / Mathlib resolve.
-PREFIX=$(pixi info -e wasm-host --json --manifest-path /opt/xeus-lean/pixi.toml \
-  2>/dev/null \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['environments_info'][0]['prefix'])" \
-  2>/dev/null \
-  || echo "/opt/xeus-lean/.pixi/envs/wasm-host")
-OLEAN_DIR="$PREFIX/share/jupyter/olean"
-if [ -d "$OLEAN_DIR" ]; then
-  export LEAN_PATH="${OLEAN_DIR}${LEAN_PATH:+:$LEAN_PATH}"
-fi
+# `xlean-convert --eval` shells out to `lean`.  Inside the math-tester
+# image LEAN_PATH already points at /opt/lean-path (Display + Mathlib
+# oleans staged at image build time).  Trust the image, but echo the
+# resolved value so failing runs are debuggable.
 echo "=== LEAN_PATH: ${LEAN_PATH:-unset} ==="
+if [ -n "${LEAN_PATH:-}" ]; then
+  echo "=== olean count under LEAN_PATH ==="
+  for p in ${LEAN_PATH//:/ } ; do
+    count=$(find "$p" -maxdepth 1 -name '*.olean' 2>/dev/null | wc -l)
+    echo "  $p — $count olean(s)"
+  done
+fi
 
 fail=0
 chapters=()
-for f in docs/math-visual/*/Ch*.md docs/tutorial/md/Ch*.md ; do
+# Only the math-visual tracks are gated by this job.  docs/tutorial/md
+# is the Lean-as-a-language intro; some of its later chapters (type-
+# level programming etc.) are deliberately illustrative-but-not-
+# elaboration-clean and aren't on the math-visual contract.
+for f in docs/math-visual/*/Ch*.md ; do
   [ -e "$f" ] || continue
   chapters+=("$f")
 done
