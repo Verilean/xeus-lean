@@ -5,7 +5,7 @@
    "type": "git",
    "subDir": null,
    "scope": "",
-   "rev": "2aea0922ae984f1b16af2e9a17ef7d97b9a79c62",
+   "rev": "c485c0ae2f100d6289c54d18c0dc6c817194875b",
    "name": "sparkle",
    "manifestFile": "lake-manifest.json",
    "inputRev": "main",

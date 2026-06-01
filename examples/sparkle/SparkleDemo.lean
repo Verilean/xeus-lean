@@ -11,10 +11,13 @@ open Sparkle.Core.Domain
 open Sparkle.Core.Signal
 
 -- A simple 4-bit counter that increments every clock cycle.
+-- Uses Sparkle's `circuit do` DSL (Sparkle.Core.CircuitDo): the
+-- `let _ ← Signal.reg _` and `_ <~ _` constructs are macros that
+-- elaborate to a Signal expression.
 def counter4 : Signal defaultDomain (BitVec 4) :=
-  Signal.circuit do
-    let count ← Signal.reg 0#4;
-    count <~ count + 1#4;
+  circuit do
+    let count ← Signal.reg 0#4
+    count <~ count + 1#4
     return count
 
 -- Simulation runs at runtime (not #eval at build time) because
