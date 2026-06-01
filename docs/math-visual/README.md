@@ -57,3 +57,39 @@ session, and grep-able for Lean facts.
 The browser kernel ships without Mathlib by default to keep cold boot
 small.  Each chapter starts with a `%load mathlib` cell that pulls in
 the needed namespace chunks on demand.
+
+## How a new chapter ships
+
+This subtree is wired into CI by `scripts/ci-build-docs.sh` and
+`.github/workflows/docs.yml`.  When you push an md file under
+`docs/math-visual/<series>/Ch*.md`:
+
+1. The docs-deploy workflow pulls the prebuilt kernel image from
+   ghcr (no Lean / emscripten rebuild — md edits don't invalidate
+   the kernel).
+2. `xlean-convert --to ipynb` emits `notebooks/Ch*.ipynb`, which
+   JupyterLite ships alongside the kernel.
+3. `xlean-convert --site` builds `_output/math-visual/<series>/`
+   (static HTML, prev/next nav, sidebar) with an "Open in
+   JupyterLite" button on every chapter page.
+4. The `math-visual-tests` job runs `xlean-convert --eval` on every
+   `Ch*.md` so chapters where a `#eval` cell broke since the last
+   build fail the workflow.
+
+So editing a chapter, pushing, and seeing the live deploy takes
+minutes — not a full kernel rebuild.
+
+## Local preview
+
+```bash
+# render every chapter to ipynb under notebooks/
+for f in docs/math-visual/*/Ch*.md ; do
+  lake exec xlean-convert --to ipynb "$f" \
+    -o "notebooks/$(basename "$f" .md).ipynb"
+done
+
+# render the static site for one series
+lake exec xlean-convert --site docs/math-visual/complex-analysis \
+  -o _site/complex-analysis --title "Visual Complex Analysis"
+xdg-open _site/complex-analysis/index.html
+```
