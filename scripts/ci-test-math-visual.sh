@@ -47,22 +47,62 @@ fi
 echo "=== Will evaluate ${#chapters[@]} chapter(s) ==="
 printf '  %s\n' "${chapters[@]}"
 
+# Sanity check: prove `lean` can resolve the imports the chapters
+# rely on.  If this 4-line smoke test can't `import Mathlib.…`,
+# nothing downstream can either — better to surface the root cause
+# once than have it repeat 15 times.
+echo
+echo "=== Sanity: resolving Mathlib imports ==="
+smoke=$(mktemp --suffix=.lean)
+cat > "$smoke" <<'EOF'
+import Mathlib.Topology.ContinuousFunction.Basic
+import Mathlib.Analysis.SpecialFunctions.Trigonometric.Basic
+import Display
+#check (Continuous : (ℝ → ℝ) → Prop)
+EOF
+if lean "$smoke" ; then
+  echo "  Mathlib + Display reachable on LEAN_PATH"
+else
+  rc=$?
+  echo "ERROR: smoke test couldn't even import Mathlib/Display (exit $rc)."
+  echo "       LEAN_PATH=${LEAN_PATH:-unset}"
+  echo "       Check that Dockerfile.math-tester staged the oleans."
+  rm -f "$smoke"
+  exit 1
+fi
+rm -f "$smoke"
+
 for f in "${chapters[@]}"; do
   echo
   echo "================================================================"
   echo "  $f"
   echo "================================================================"
   out=$(mktemp --suffix=.md)
-  if xlean-convert --eval "$f" -o "$out"; then
+  err=$(mktemp --suffix=.log)
+  # Capture xlean-convert's own stderr (which holds the lean stdout
+  # + stderr dump emitted by runEval on failure) into a file so we
+  # can re-print it cleanly under the chapter header.  Without this
+  # the CI log interleaves stderr from the next loop iteration and
+  # it's impossible to tell which chapter failed for what reason.
+  if xlean-convert --eval "$f" -o "$out" 2> "$err" ; then
     echo "  OK"
   else
     echo "  FAIL: $f"
     fail=$((fail + 1))
-    # Show the first eval-output fence so the failure is debuggable
-    # without re-running locally.
-    head -200 "$out" || true
+    echo "--- xlean-convert stderr ---"
+    cat "$err" || true
+    echo "--- rendered output (head) ---"
+    head -80 "$out" || true
+    echo "--- end of failure dump for $f ---"
   fi
-  rm -f "$out"
+  # Always echo stderr too, since `lean --run` may emit warnings
+  # (e.g. `declaration uses 'sorry'`) that we want visible even on
+  # successful chapters.
+  if [ "${VERBOSE:-0}" = "1" ] && [ -s "$err" ]; then
+    echo "--- xlean-convert stderr (verbose) ---"
+    cat "$err"
+  fi
+  rm -f "$out" "$err"
 done
 
 echo
