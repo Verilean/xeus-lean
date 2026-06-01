@@ -488,34 +488,10 @@ jobs:
         cache-from: type=gha,scope=base-image
         cache-to: type=gha,mode=max,scope=base-image
 
-  # ============================================================
-  # Deploy to GitHub Pages (main branch only)
-  # ============================================================
-  deploy-pages:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: wasm-build
-    runs-on: ubuntu-latest
-
-    permissions:
-      pages: write
-      id-token: write
-      contents: read
-
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
-    steps:
-    - name: Configure GitHub Pages
-      run: |
-        echo "Deploying to GitHub Pages"
-        echo "Repository: ${{ github.repository }}"
-        echo "Ensure GitHub Pages is enabled at:"
-        echo "https://github.com/${{ github.repository }}/settings/pages"
-        echo "Source should be set to: GitHub Actions"
-
-    - name: Deploy to GitHub Pages
-      id: deployment
-      uses: actions/deploy-pages@v4
-      with:
-        timeout: 600000
+  # GitHub Pages deploys moved to .github/workflows/docs.yml — that
+  # workflow pulls the prebuilt kernel image, runs xlean-convert +
+  # jupyter lite build, and owns the actions/upload-pages-artifact +
+  # actions/deploy-pages pair.  Keeping a second deploy here would
+  # race (concurrency group `pages` collisions) and the artifact name
+  # the wasm-build job uploads is intentionally `jupyterlite-site-ci`,
+  # not `github-pages`, to keep the two workflows from interfering.
