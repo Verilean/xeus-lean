@@ -33,27 +33,36 @@ mkdir -p _output notebooks
 # ----------------------------------------------------------------------
 # 1. md → ipynb for tutorial chapters.
 #
-# Pattern: every Ch*.md under a tracked directory becomes
-# notebooks/<Ch...>.ipynb (flat namespace; ChNN_Title.md uniqueness
-# is the author's responsibility).
+# Layout under notebooks/ (= JupyterLite content tree, = the sidebar
+# the user sees):
+#
+#   notebooks/
+#     tutorial/Ch00_Setup.ipynb …            ← Lean-language intro
+#     math-visual/complex-analysis/Ch00…ipynb
+#     math-visual/real-analysis/Ch00…ipynb
+#
+# A flat layout collided (Ch00 in two series) AND made the sidebar
+# unreadable, so we mirror the docs/ tree one level deep.
 # ----------------------------------------------------------------------
-gen_ipynb_for () {
-  local dir="$1"
-  [ -d "$dir" ] || return 0
-  for f in "$dir"/Ch*.md; do
+gen_ipynb_into () {
+  local src="$1" dest_dir="$2"
+  [ -d "$src" ] || return 0
+  mkdir -p "$dest_dir"
+  for f in "$src"/Ch*.md; do
     [ -e "$f" ] || continue
-    local out="notebooks/$(basename "$f" .md).ipynb"
+    local out="$dest_dir/$(basename "$f" .md).ipynb"
     xlean-convert --to ipynb "$f" -o "$out"
     echo "  $f → $out"
   done
 }
 
 echo "=== Generating ipynb from md ==="
-gen_ipynb_for docs/tutorial/md
-for series in docs/math-visual/*/ ; do
-  [ -d "$series" ] || continue
+gen_ipynb_into docs/tutorial/md notebooks/tutorial
+for series_dir in docs/math-visual/*/ ; do
+  [ -d "$series_dir" ] || continue
+  series=$(basename "$series_dir")
   echo "  series: $series"
-  gen_ipynb_for "$series"
+  gen_ipynb_into "$series_dir" "notebooks/math-visual/$series"
 done
 
 # ----------------------------------------------------------------------
@@ -93,8 +102,11 @@ build_site () {
 }
 
 echo "=== Building static HTML sites ==="
+# The `?path=...` prefix tells xlean-convert (and JupyterLite) to
+# open ipynb files inside the same series subfolder, matching the
+# layout established in step 1.
 build_site docs/tutorial/md _output/tutorial \
-  "Learn Lean 4" "../lab/index.html"
+  "Learn Lean 4" "../lab/index.html?path=tutorial/"
 
 for series_dir in docs/math-visual/*/ ; do
   [ -d "$series_dir" ] || continue
@@ -103,7 +115,7 @@ for series_dir in docs/math-visual/*/ ; do
   title=$(echo "$series" | sed -e 's/-/ /g' \
     -e 's/\b\(.\)/\u\1/g')
   build_site "$series_dir" "_output/math-visual/$series" \
-    "Visual $title" "../../lab/index.html"
+    "Visual $title" "../../lab/index.html?path=math-visual/$series/"
 done
 
 # ----------------------------------------------------------------------
