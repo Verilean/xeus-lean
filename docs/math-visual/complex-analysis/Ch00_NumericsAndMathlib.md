@@ -46,7 +46,10 @@ host's IEEE 754 double-precision float, with `@[extern]` bindings to
 the standard C library:
 
 ```lean
-#eval Float.pi              -- 3.141593
+-- Lean core's Float doesn't ship a π constant; we get it from acos.
+def pi : Float := Float.acos (-1.0)
+
+#eval pi                    -- 3.141593
 #eval Float.exp 1.0         -- 2.718282
 #eval Float.cos 0.0         -- 1.0
 #eval Float.atan2 1.0 1.0   -- π/4 ≈ 0.785398
@@ -126,7 +129,7 @@ open ComplexF
 
 #eval (1 + I) * (1 + I)       -- (0 + 2i): i² = -1 in action
 #eval (I).exp                 -- e^i = cos 1 + i sin 1 ≈ (0.54, 0.84)
-#eval (ofReal Float.pi * I).exp  -- e^(iπ) = -1: floating-point noise nearby
+#eval (ofReal pi * I).exp  -- e^(iπ) = -1: floating-point noise nearby
 #eval abs (1 + I)             -- √2 ≈ 1.414
 #eval arg (1 + I)             -- π/4 ≈ 0.785
 ```
@@ -161,9 +164,9 @@ Numerically, via `ComplexF`:
 
 ```lean
 open ComplexF
-#eval (ofReal Float.pi * I).exp
+#eval (ofReal pi * I).exp
 -- (-1.0, 1.2246467991473532e-16) — basically -1, with rounding fuzz
-#eval abs ((ofReal Float.pi * I).exp + 1)
+#eval abs ((ofReal pi * I).exp + 1)
 -- ≈ 1.2e-16: the distance from e^(iπ) to -1 is one float ULP
 ```
 
