@@ -6,9 +6,12 @@ on:
   pull_request:
     branches: [ main, master ]
 
-# Allow only one concurrent deployment to GitHub Pages
+# Pages deploys live in .github/workflows/docs.yml now; this workflow
+# is the kernel-correctness gate (native build, WASM smoke, Playwright
+# E2E, docker image smokes).  Concurrency is scoped per branch so
+# back-to-back commits cancel in-flight kernel builds.
 concurrency:
-  group: pages-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -350,18 +353,16 @@ jobs:
           tests/e2e/test-results/
         retention-days: 7
 
-    - name: Upload JupyterLite site
+    - name: Upload JupyterLite site (build artifact only)
+      # Pages deploys come from .github/workflows/docs.yml — that
+      # workflow rebuilds the site against the prebuilt kernel
+      # image so md-only PRs deploy in minutes.  Here we just keep
+      # the artifact for inspection on this workflow's runs.
       uses: actions/upload-artifact@v4
       with:
-        name: jupyterlite-site
+        name: jupyterlite-site-ci
         path: _output/
         retention-days: 7
-
-    - name: Upload Pages artifact
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-      uses: actions/upload-pages-artifact@v3
-      with:
-        path: _output/
 
   # ============================================================
   # Native Sparkle Docker image — builds Dockerfile.native-sparkle

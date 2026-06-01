@@ -1,0 +1,141 @@
+# Dockerfile.docs-builder — prebuilt kernel + toolchain for the docs CI.
+#
+# What's inside:
+#   - Lean toolchain (elan)
+#   - pixi envs wasm-build / wasm-host (emscripten + xeus-lean runtime deps)
+#   - Built WASM xlean.{js,wasm} installed under the wasm-host prefix
+#   - Packed default olean tarballs under /opt/xeus-lean/_olean
+#   - xlean-convert binary at /usr/local/bin/xlean-convert
+#   - Node.js 23 for any wasm64 test runs the docs job wants to do
+#
+# What's NOT inside:
+#   - The notebooks/ or docs/ trees that change on every md edit. The
+#     docs-deploy CI job mounts the checkout over /opt/xeus-lean/_src
+#     and runs jupyter lite build from there.
+#
+# Build:
+#   docker build -f Dockerfile.docs-builder \
+#     -t ghcr.io/<owner>/xeus-lean-docs-builder:latest .
+#
+# Refresh when any of these change:
+#   src/, include/, cmake/, CMakeLists.txt, lakefile.lean,
+#   lean-toolchain, pixi.toml, pixi.lock, examples/sparkle/,
+#   hesper/, hesper-wasm/, scripts/, this Dockerfile.
+
+FROM ghcr.io/prefix-dev/pixi:latest AS builder
+
+RUN apt-get update && \
+    apt-get install -y curl git xz-utils python3 zstd && \
+    rm -rf /var/lib/apt/lists/*
+
+# Lean via elan.
+RUN curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y
+ENV PATH="/root/.elan/bin:${PATH}"
+
+# Node.js 23+ (pixi bundles v16, too old for wasm64).
+RUN curl -fsSL https://nodejs.org/dist/v23.6.0/node-v23.6.0-linux-x64.tar.xz \
+    | tar -xJ -C /usr/local --strip-components=1
+
+WORKDIR /opt/xeus-lean
+
+# Pixi envs first for layer caching.
+COPY pixi.toml pixi.lock* ./
+RUN pixi install -e wasm-build || pixi install -e wasm-build --no-lockfile-update
+RUN pixi install -e wasm-host  || pixi install -e wasm-host  --no-lockfile-update
+
+# Narrow copies so editing docs/, notebooks/, README, etc. does NOT
+# invalidate the heavy emcc / lake layers.
+COPY lakefile.lean lake-manifest.json lean-toolchain ./
+COPY CMakeLists.txt ./
+COPY cmake/        ./cmake/
+COPY include/      ./include/
+COPY share/        ./share/
+COPY scripts/      ./scripts/
+COPY src/          ./src/
+COPY examples/     ./examples/
+COPY hesper/       ./hesper/
+COPY hesper-wasm/  ./hesper-wasm/
+COPY test_wasm_node.cpp ./
+
+# Bring up enough Lean targets that WasmRepl links and that
+# xlean-convert is built natively.  REPL/Display/WasmRepl are the
+# WASM-side targets; xlean-convert is host.
+RUN lake build REPL Display WasmRepl xlean-convert
+
+# Sparkle .olean → embedded into WASM VFS.
+RUN cd examples/sparkle && lake update && lake build SparkleDemo || \
+    echo "WARN: Sparkle build failed; continuing without Sparkle"
+
+# Hesper WGSL DSL (Phase 1).
+RUN if [ -f hesper/Hesper.lean ]; then \
+      mkdir -p hesper-wasm/build && \
+      bash hesper-wasm/build-wasm.sh hesper hesper-wasm/build \
+        Hesper.WGSL.DSL Hesper.WGSL.Helpers Hesper.WGSL.Templates \
+        Hesper.WGSL.Shader Hesper.WGSL.Kernel \
+        || echo "WARN: hesper-wasm build failed"; \
+    else echo "Hesper submodule absent"; fi
+
+# Emscripten + cmake + emmake.
+RUN pixi run -e wasm-build fix-emscripten-links || true
+RUN pixi run -e wasm-build emcmake cmake -S . -B wasm-build \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ON
+RUN pixi run -e wasm-build emmake make -C wasm-build -j$(nproc) xlean test_wasm_node
+
+# Smoke-test the WASM build before we lock it into the image.
+RUN node --experimental-wasm-memory64 wasm-build/test_wasm_node.js
+
+# Install xlean into wasm-host PREFIX and rewrite kernel.json argv to
+# an absolute path (matches what Dockerfile.wasm does).
+RUN PREFIX=$(pixi info -e wasm-host --json 2>/dev/null \
+      | python3 -c "import sys,json; print(json.load(sys.stdin)['environments_info'][0]['prefix'])" \
+      2>/dev/null || echo ".pixi/envs/wasm-host") && \
+    pixi run -e wasm-build cmake --install wasm-build --prefix "$PREFIX" && \
+    ABS_PREFIX=$(realpath "$PREFIX") && \
+    python3 -c "import json,pathlib; \
+p=pathlib.Path('$PREFIX/share/jupyter/kernels/xlean/kernel.json'); \
+spec=json.loads(p.read_text()); \
+spec['argv']=['$ABS_PREFIX/bin/xlean']; \
+p.write_text(json.dumps(spec, indent=2))" && \
+    ls -lh "$PREFIX/bin/" | grep xlean && \
+    cat "$PREFIX/share/jupyter/kernels/xlean/kernel.json"
+
+# Pack default olean tarballs once.  Cache them under /opt/xeus-lean/_olean
+# so the docs-deploy job can copy them straight into _output/xeus/wasm-host/olean
+# without re-packing on every md edit.
+RUN PREFIX=$(pixi info -e wasm-host --json 2>/dev/null \
+      | python3 -c "import sys,json; print(json.load(sys.stdin)['environments_info'][0]['prefix'])" \
+      2>/dev/null || echo ".pixi/envs/wasm-host") && \
+    if [ -d "$PREFIX/share/jupyter/olean" ]; then \
+      if [ -d hesper-wasm/build/Hesper ]; then \
+        ln -sf "$(realpath hesper-wasm/build/Hesper)" "$PREFIX/share/jupyter/olean/Hesper"; \
+      fi && \
+      mkdir -p /opt/xeus-lean/_olean && \
+      bash scripts/pack-olean-modules.sh "$PREFIX/share/jupyter/olean" /opt/xeus-lean/_olean "" && \
+      ls -lh /opt/xeus-lean/_olean; \
+    else \
+      echo "no oleans under $PREFIX, skipping pack"; \
+    fi
+
+# Expose xlean-convert as a top-level binary so docs-deploy can just
+# call `xlean-convert ...` without knowing the .lake layout.
+RUN install -m 0755 .lake/build/bin/xlean-convert /usr/local/bin/xlean-convert
+
+# Provide a tiny entrypoint shim that pretends pixi-shell already ran.
+# `xlean-convert --eval` shells out to `lean`, so put elan on PATH and
+# point LEAN_PATH at the wasm-host olean tree so Display, Mathlib etc.
+# resolve out of the prebuilt artefacts.
+ENV PATH="/root/.elan/bin:/usr/local/bin:${PATH}"
+
+# Default workdir for the docs-deploy job to bind-mount over.
+WORKDIR /opt/xeus-lean
+
+# Sanity entrypoint: print the versions of every tool the docs job
+# is going to invoke.  Cheap and turns "image is broken" into a
+# fast obvious failure.
+CMD ["bash", "-lc", "\
+echo '=== xlean-convert ==='; xlean-convert --help | head -5 || true; \
+echo '=== lean ==='; lean --version; \
+echo '=== node ==='; node --version; \
+echo '=== pixi ==='; pixi --version; \
+echo '=== olean cache ==='; ls /opt/xeus-lean/_olean | head"]

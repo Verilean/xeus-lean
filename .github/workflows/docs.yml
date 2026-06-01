@@ -1,0 +1,287 @@
+name: Docs
+
+# Goal: editing markdown under docs/ should deploy a fresh JupyterLite
+# site to GitHub Pages in minutes, not the 30-60 min full WASM build.
+#
+# We split the work into two jobs:
+#   1. kernel-image — rebuilds Dockerfile.docs-builder (xlean WASM,
+#      olean tarballs, xlean-convert) and pushes it to ghcr.  Only
+#      runs when the kernel sources actually change, or on main
+#      pushes, or on manual dispatch.  PRs against forks don't have
+#      ghcr push perms so they only build to verify.
+#   2. docs-deploy — pulls the image, runs xlean-convert + jupyter
+#      lite build on the latest md, deploys to Pages.  Always runs.
+#
+# A separate "math-visual-tests" job runs xlean-convert --eval over
+# every Ch*.md and fails the workflow if any cell stops executing.
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      force_image_rebuild:
+        description: 'Rebuild the docs-builder image even if no kernel src changed'
+        type: boolean
+        default: false
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/xeus-lean-docs-builder
+
+jobs:
+  # ============================================================
+  # Detect whether kernel sources changed in this PR / push.  If
+  # not, docs-deploy can pull :latest from ghcr and skip the
+  # 30-minute build.
+  # ============================================================
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      kernel: ${{ steps.filter.outputs.kernel }}
+      docs:   ${{ steps.filter.outputs.docs }}
+    steps:
+    - uses: actions/checkout@v4
+    - name: Detect kernel vs docs changes
+      id: filter
+      uses: dorny/paths-filter@v3
+      with:
+        filters: |
+          kernel:
+            - 'src/**'
+            - 'include/**'
+            - 'cmake/**'
+            - 'CMakeLists.txt'
+            - 'lakefile.lean'
+            - 'lake-manifest.json'
+            - 'lean-toolchain'
+            - 'pixi.toml'
+            - 'pixi.lock'
+            - 'examples/sparkle/**'
+            - 'hesper/**'
+            - 'hesper-wasm/**'
+            - 'scripts/**'
+            - 'Dockerfile.docs-builder'
+            - '.github/workflows/docs.yml'
+          docs:
+            - 'docs/**'
+            - 'notebooks/**'
+            - 'README.md'
+
+  # ============================================================
+  # kernel-image — build & push Dockerfile.docs-builder to ghcr.
+  # ============================================================
+  kernel-image:
+    needs: changes
+    if: |
+      needs.changes.outputs.kernel == 'true' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image_ref: ${{ steps.tag.outputs.image_ref }}
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Free disk space
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android \
+          /opt/ghc /opt/hostedtoolcache/CodeQL || true
+        df -h
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Compute lowercase image name
+      id: tag
+      run: |
+        # ghcr image paths must be lowercase.
+        owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
+        echo "image=ghcr.io/${owner}/xeus-lean-docs-builder" >> $GITHUB_OUTPUT
+        echo "image_ref=ghcr.io/${owner}/xeus-lean-docs-builder:${{ github.sha }}" >> $GITHUB_OUTPUT
+
+    - name: Log in to GHCR
+      if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build & (conditionally) push docs-builder image
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: Dockerfile.docs-builder
+        tags: |
+          ${{ steps.tag.outputs.image }}:latest
+          ${{ steps.tag.outputs.image }}:${{ github.sha }}
+        # PRs from forks can't push to ghcr; we still want the build
+        # to act as a CI check.  push only when we logged in.
+        push: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        cache-from: type=gha,scope=docs-builder
+        cache-to: type=gha,mode=max,scope=docs-builder
+
+  # ============================================================
+  # docs-deploy — md → ipynb + static HTML + JupyterLite + Pages.
+  #
+  # Pulls the prebuilt kernel image and runs everything inside it,
+  # so the host runner never installs emscripten / pixi / lean.
+  # ============================================================
+  docs-deploy:
+    needs: [changes, kernel-image]
+    # `kernel-image` is skipped when no kernel files changed; that's
+    # not a failure — we just pull :latest from ghcr.  `always() &&`
+    # lets this job run regardless of kernel-image's outcome as long
+    # as it didn't actively fail.
+    if: |
+      always() &&
+      needs.changes.result == 'success' &&
+      (needs.kernel-image.result == 'success' || needs.kernel-image.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: read
+      packages: read
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Resolve image tag
+      id: img
+      run: |
+        owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
+        # If kernel-image ran this turn, use the per-sha tag; otherwise
+        # pull :latest.  :latest reflects whatever the most recent main
+        # build produced.
+        if [ "${{ needs.kernel-image.result }}" = "success" ]; then
+          echo "ref=ghcr.io/${owner}/xeus-lean-docs-builder:${{ github.sha }}" >> $GITHUB_OUTPUT
+        else
+          echo "ref=ghcr.io/${owner}/xeus-lean-docs-builder:latest" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Log in to GHCR (read)
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Pull docs-builder image
+      run: docker pull ${{ steps.img.outputs.ref }}
+
+    - name: Run docs build inside container
+      env:
+        IMG: ${{ steps.img.outputs.ref }}
+      run: |
+        # Mount the checkout read-write at /work and ship a small build
+        # script in.  The script lives in scripts/ci-build-docs.sh so
+        # it can be edited from a PR without rebuilding the image.
+        mkdir -p _output notebooks
+        docker run --rm \
+          -v "${{ github.workspace }}:/work" \
+          -w /work \
+          -e CI=1 \
+          "$IMG" \
+          bash scripts/ci-build-docs.sh
+
+    - name: Verify _output
+      run: |
+        ls -lh _output/index.html
+        find _output -maxdepth 3 -name '*.html' | head -20
+        if [ -d _output/math-visual ]; then
+          echo "=== math-visual sites ==="
+          ls -lh _output/math-visual/
+        fi
+
+    - name: Upload site artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: jupyterlite-site
+        path: _output/
+        retention-days: 7
+
+    - name: Upload Pages artifact
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: _output/
+
+    - name: Deploy to GitHub Pages
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      id: deployment
+      uses: actions/deploy-pages@v4
+      with:
+        timeout: 600000
+
+  # ============================================================
+  # math-visual-tests — execute every Ch*.md to make sure cells
+  # still run.  Same image as docs-deploy.
+  # ============================================================
+  math-visual-tests:
+    needs: [changes, kernel-image]
+    if: |
+      always() &&
+      needs.changes.result == 'success' &&
+      (needs.kernel-image.result == 'success' || needs.kernel-image.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Resolve image tag
+      id: img
+      run: |
+        owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
+        if [ "${{ needs.kernel-image.result }}" = "success" ]; then
+          echo "ref=ghcr.io/${owner}/xeus-lean-docs-builder:${{ github.sha }}" >> $GITHUB_OUTPUT
+        else
+          echo "ref=ghcr.io/${owner}/xeus-lean-docs-builder:latest" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Log in to GHCR (read)
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Pull docs-builder image
+      run: docker pull ${{ steps.img.outputs.ref }}
+
+    - name: Run --eval on every math-visual chapter
+      env:
+        IMG: ${{ steps.img.outputs.ref }}
+      run: |
+        docker run --rm \
+          -v "${{ github.workspace }}:/work" \
+          -w /work \
+          -e CI=1 \
+          "$IMG" \
+          bash scripts/ci-test-math-visual.sh
