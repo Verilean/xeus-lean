@@ -21,10 +21,19 @@ set -uo pipefail
 # resolved value so failing runs are debuggable.
 echo "=== LEAN_PATH: ${LEAN_PATH:-unset} ==="
 if [ -n "${LEAN_PATH:-}" ]; then
-  echo "=== olean count under LEAN_PATH ==="
+  echo "=== olean inventory under LEAN_PATH ==="
   for p in ${LEAN_PATH//:/ } ; do
     count=$(find "$p" -maxdepth 1 -name '*.olean' 2>/dev/null | wc -l)
-    echo "  $p — $count olean(s)"
+    echo "  $p — $count top-level olean(s)"
+    # Dump the top-level olean filenames so we can see if Mathlib /
+    # Display / Aesop / etc. actually made it into the image.
+    find "$p" -maxdepth 1 -name '*.olean' 2>/dev/null | sort | sed 's|^|    |'
+    # And the immediate subdirectories (Mathlib/, Aesop/, ...).
+    dirs=$(find "$p" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort)
+    if [ -n "$dirs" ]; then
+      echo "  $p subdirs:"
+      echo "$dirs" | sed 's|^|    |'
+    fi
   done
 fi
 

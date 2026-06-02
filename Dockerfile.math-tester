@@ -58,6 +58,8 @@ RUN lake build Mathlib
 # ----------------------------------------------------------------------
 RUN set -eux; \
     mkdir -p /opt/lean-path; \
+    echo '=== contents of .lake/packages/ ==='; \
+    ls -la .lake/packages/ || true; \
     for dep in mathlib aesop batteries importGraph proofwidgets plausible Qq LeanSearchClient Cli; do \
       src=".lake/packages/${dep}/.lake/build/lib/lean"; \
       if [ -d "$src" ]; then \
@@ -65,10 +67,22 @@ RUN set -eux; \
         cp -r "$src"/. /opt/lean-path/; \
       else \
         echo "[stage] skip $dep (no $src)"; \
+        if [ -d ".lake/packages/${dep}" ]; then \
+          echo "  but .lake/packages/${dep}/ exists; layout:"; \
+          find ".lake/packages/${dep}" -maxdepth 4 -name '*.olean' -print 2>/dev/null | head -3 || true; \
+          find ".lake/packages/${dep}" -maxdepth 3 -type d 2>/dev/null | head -10 || true; \
+        fi; \
       fi; \
     done; \
+    echo '=== final /opt/lean-path summary ==='; \
     du -sh /opt/lean-path; \
-    find /opt/lean-path -maxdepth 1 -mindepth 1 -name '*.olean' | head -5
+    find /opt/lean-path -maxdepth 1 -mindepth 1 \( -name '*.olean' -o -type d \) | sort | head -40; \
+    # Fail loudly if Mathlib didn't make it in — there's no point
+    # publishing an image that can't even import Mathlib.Topology.
+    if [ ! -f /opt/lean-path/Mathlib.olean ] && [ ! -d /opt/lean-path/Mathlib ]; then \
+      echo 'FATAL: Mathlib oleans missing from /opt/lean-path'; \
+      exit 1; \
+    fi
 
 # ----------------------------------------------------------------------
 # Build xlean-convert (host binary) + Display olean.  Display is the
