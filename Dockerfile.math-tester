@@ -49,8 +49,38 @@ rev  = "${LEAN_VERSION}"
 EOF
 RUN mkdir -p MathlibBundle && echo "import Mathlib" > MathlibBundle.lean
 RUN lake update
-RUN lake exe cache get || true
-RUN lake build Mathlib
+# `lake exe cache get` pulls pre-built oleans from Mathlib's CI
+# cache.  Tolerate partial failure (some modules may not have cached
+# artefacts for the toolchain in use), but log loudly so the build
+# log surfaces it.
+RUN lake exe cache get 2>&1 | tee /tmp/cache-get.log || echo "WARN: lake exe cache get returned non-zero"
+RUN echo "=== Mathlib oleans after cache get ===" && \
+    find .lake/packages/mathlib/.lake/build/lib/lean/Mathlib -name '*.olean' 2>/dev/null | wc -l && \
+    echo "=== Specific paths we know the test chapters need ===" && \
+    for needed in \
+        Mathlib/Topology/ContinuousFunction/Basic.olean \
+        Mathlib/Analysis/SpecialFunctions/Trigonometric/Basic.olean \
+        Mathlib/Analysis/Calculus/Deriv/Polynomial.olean \
+        Mathlib/Analysis/Calculus/MeanValue.olean \
+        Mathlib/MeasureTheory/Integral/IntervalIntegral.olean \
+        Mathlib/Analysis/SpecialFunctions/Complex/Circle.olean ; do \
+      p=".lake/packages/mathlib/.lake/build/lib/lean/$needed"; \
+      if [ -f "$p" ]; then echo "  OK  $needed"; else echo "  MISS $needed"; fi; \
+    done
+# Build the umbrella + every module needed by the math-visual chapters.
+# `lake build Mathlib` alone tends to be a no-op when `cache get`
+# already populated most oleans, so we explicitly name the modules
+# we want present.  Compiling these locally (a few minutes if cache
+# get hit, longer otherwise) is acceptable for a once-per-toolchain
+# image refresh.
+RUN lake build \
+      Mathlib \
+      Mathlib.Topology.ContinuousFunction.Basic \
+      Mathlib.Analysis.SpecialFunctions.Trigonometric.Basic \
+      Mathlib.Analysis.SpecialFunctions.Complex.Circle \
+      Mathlib.Analysis.Calculus.Deriv.Polynomial \
+      Mathlib.Analysis.Calculus.MeanValue \
+      Mathlib.MeasureTheory.Integral.IntervalIntegral
 
 # ----------------------------------------------------------------------
 # Stage every olean we want on LEAN_PATH for the tests.  Same set of
@@ -82,7 +112,24 @@ RUN set -eux; \
     if [ ! -f /opt/lean-path/Mathlib.olean ] && [ ! -d /opt/lean-path/Mathlib ]; then \
       echo 'FATAL: Mathlib oleans missing from /opt/lean-path'; \
       exit 1; \
-    fi
+    fi; \
+    # Spot-check the specific paths the math-visual chapters import.
+    # If `cache get` was partial we shipped a useless image last time;
+    # surface that here instead of in the test job.
+    missing=0; \
+    for needed in \
+        Mathlib/Topology/ContinuousFunction/Basic.olean \
+        Mathlib/Analysis/SpecialFunctions/Trigonometric/Basic.olean \
+        Mathlib/Analysis/SpecialFunctions/Complex/Circle.olean \
+        Mathlib/Analysis/Calculus/Deriv/Polynomial.olean \
+        Mathlib/Analysis/Calculus/MeanValue.olean \
+        Mathlib/MeasureTheory/Integral/IntervalIntegral.olean ; do \
+      if [ ! -f "/opt/lean-path/$needed" ]; then \
+        echo "FATAL: missing /opt/lean-path/$needed"; \
+        missing=$((missing + 1)); \
+      fi; \
+    done; \
+    [ "$missing" = 0 ] || exit 1
 
 # ----------------------------------------------------------------------
 # Build xlean-convert (host binary) + Display olean.  Display is the

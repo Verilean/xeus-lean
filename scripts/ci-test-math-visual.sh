@@ -75,7 +75,24 @@ else
   rc=$?
   echo "ERROR: smoke test couldn't even import Mathlib/Display (exit $rc)."
   echo "       LEAN_PATH=${LEAN_PATH:-unset}"
-  echo "       Check that Dockerfile.math-tester staged the oleans."
+  # Drill down into what's actually present.  The most common failure
+  # is "lake exe cache get pulled `Mathlib.olean` (the umbrella file
+  # that triggers fetches) but no subdirectory oleans, so any
+  # `import Mathlib.Topology.…` fails."
+  for p in ${LEAN_PATH//:/ } ; do
+    if [ -d "$p/Mathlib" ]; then
+      echo "--- $p/Mathlib top-level entries ---"
+      ls -la "$p/Mathlib" | head -30
+      if [ -d "$p/Mathlib/Topology" ]; then
+        echo "--- $p/Mathlib/Topology/ContinuousFunction ---"
+        ls -la "$p/Mathlib/Topology/ContinuousFunction" 2>&1 | head -10
+      else
+        echo "    (no $p/Mathlib/Topology directory)"
+      fi
+      total=$(find "$p/Mathlib" -name '*.olean' 2>/dev/null | wc -l)
+      echo "    Mathlib olean count under $p: $total"
+    fi
+  done
   rm -f "$smoke"
   exit 1
 fi
