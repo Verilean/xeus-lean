@@ -49,14 +49,41 @@ rev  = "${LEAN_VERSION}"
 EOF
 RUN mkdir -p MathlibBundle && echo "import Mathlib" > MathlibBundle.lean
 RUN lake update
-# `lake exe cache get` pulls pre-built oleans from Mathlib's CI
-# cache.  Tolerate partial failure (some modules may not have cached
-# artefacts for the toolchain in use), but log loudly so the build
-# log surfaces it.
+
+# Diagnose what `lake update` actually fetched.  We saw `lake build
+# Mathlib.Topology.ContinuousFunction.Basic` fail with "no such file
+# or directory: …/Mathlib/Topology/ContinuousFunction/Basic.lean"
+# even though every other olean was present — somewhere the .lean
+# source tree got truncated.  Log the directory layout so we can
+# tell whether `lake update` shallow-cloned, mathlib-cache's setup
+# wiped sources, or something else.
+RUN echo "=== mathlib package dir after lake update ===" && \
+    ls -la .lake/packages/mathlib/ 2>&1 | head -20 && \
+    echo "=== source vs olean parity for the test set ===" && \
+    for needed in \
+        Mathlib/Topology/ContinuousFunction/Basic \
+        Mathlib/Analysis/SpecialFunctions/Trigonometric/Basic \
+        Mathlib/Analysis/SpecialFunctions/Complex/Circle \
+        Mathlib/Analysis/Calculus/Deriv/Polynomial \
+        Mathlib/Analysis/Calculus/MeanValue \
+        Mathlib/MeasureTheory/Integral/IntervalIntegral ; do \
+      src=".lake/packages/mathlib/$needed.lean"; \
+      if [ -f "$src" ]; then echo "  SRC  $needed.lean"; else echo "  no-SRC $needed.lean"; fi; \
+    done && \
+    echo "=== total .lean sources under mathlib ===" && \
+    find .lake/packages/mathlib -name '*.lean' 2>/dev/null | wc -l && \
+    echo "=== git state of mathlib checkout ===" && \
+    (cd .lake/packages/mathlib && git log --oneline -1 2>&1 | head -3 && git status --short 2>&1 | head -5) || true
+
+# `lake exe cache get` pulls pre-built oleans for source files it
+# already sees on disk.  If `lake update` brought down a shallow /
+# truncated working tree, cache get will populate oleans for the
+# subset of source it can see — which is what we observed: most
+# oleans present, but a couple of leaves silently absent.
 RUN lake exe cache get 2>&1 | tee /tmp/cache-get.log || echo "WARN: lake exe cache get returned non-zero"
+
 RUN echo "=== Mathlib oleans after cache get ===" && \
     find .lake/packages/mathlib/.lake/build/lib/lean/Mathlib -name '*.olean' 2>/dev/null | wc -l && \
-    echo "=== Specific paths we know the test chapters need ===" && \
     for needed in \
         Mathlib/Topology/ContinuousFunction/Basic.olean \
         Mathlib/Analysis/SpecialFunctions/Trigonometric/Basic.olean \
@@ -67,20 +94,14 @@ RUN echo "=== Mathlib oleans after cache get ===" && \
       p=".lake/packages/mathlib/.lake/build/lib/lean/$needed"; \
       if [ -f "$p" ]; then echo "  OK  $needed"; else echo "  MISS $needed"; fi; \
     done
-# Build the umbrella + every module needed by the math-visual chapters.
-# `lake build Mathlib` alone tends to be a no-op when `cache get`
-# already populated most oleans, so we explicitly name the modules
-# we want present.  Compiling these locally (a few minutes if cache
-# get hit, longer otherwise) is acceptable for a once-per-toolchain
-# image refresh.
-RUN lake build \
-      Mathlib \
-      Mathlib.Topology.ContinuousFunction.Basic \
-      Mathlib.Analysis.SpecialFunctions.Trigonometric.Basic \
-      Mathlib.Analysis.SpecialFunctions.Complex.Circle \
-      Mathlib.Analysis.Calculus.Deriv.Polynomial \
-      Mathlib.Analysis.Calculus.MeanValue \
-      Mathlib.MeasureTheory.Integral.IntervalIntegral
+
+# Build the umbrella.  We don't enumerate leaf modules here — the
+# umbrella's transitive imports cover them, and Lake will compile
+# whatever the cache didn't fill.  Enumerating leaves was unsafe
+# because `lake update` produced a tree where some source files
+# were missing, and Lake refuses to build a module whose .lean is
+# absent (rather than treating it as a no-op).
+RUN lake build Mathlib
 
 # ----------------------------------------------------------------------
 # Stage every olean we want on LEAN_PATH for the tests.  Same set of
