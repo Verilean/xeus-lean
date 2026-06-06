@@ -52,7 +52,7 @@ RUN lake update
 
 # Diagnose what `lake update` actually fetched.  We saw `lake build
 # Mathlib.Topology.ContinuousFunction.Basic` fail with "no such file
-# or directory: …/Mathlib/Topology/ContinuousFunction/Basic.lean"
+# or directory: …/Mathlib/Topology/ContinuousMap/Basic.lean"
 # even though every other olean was present — somewhere the .lean
 # source tree got truncated.  Log the directory layout so we can
 # tell whether `lake update` shallow-cloned, mathlib-cache's setup
@@ -61,12 +61,12 @@ RUN echo "=== mathlib package dir after lake update ===" && \
     ls -la .lake/packages/mathlib/ 2>&1 | head -20 && \
     echo "=== source vs olean parity for the test set ===" && \
     for needed in \
-        Mathlib/Topology/ContinuousFunction/Basic \
+        Mathlib/Topology/ContinuousMap/Basic \
         Mathlib/Analysis/SpecialFunctions/Trigonometric/Basic \
         Mathlib/Analysis/SpecialFunctions/Complex/Circle \
         Mathlib/Analysis/Calculus/Deriv/Polynomial \
         Mathlib/Analysis/Calculus/MeanValue \
-        Mathlib/MeasureTheory/Integral/IntervalIntegral ; do \
+        Mathlib/MeasureTheory/Integral/IntervalIntegral/Basic ; do \
       src=".lake/packages/mathlib/$needed.lean"; \
       if [ -f "$src" ]; then echo "  SRC  $needed.lean"; else echo "  no-SRC $needed.lean"; fi; \
     done && \
@@ -85,11 +85,11 @@ RUN lake exe cache get 2>&1 | tee /tmp/cache-get.log || echo "WARN: lake exe cac
 RUN echo "=== Mathlib oleans after cache get ===" && \
     find .lake/packages/mathlib/.lake/build/lib/lean/Mathlib -name '*.olean' 2>/dev/null | wc -l && \
     for needed in \
-        Mathlib/Topology/ContinuousFunction/Basic.olean \
+        Mathlib/Topology/ContinuousMap/Basic.olean \
         Mathlib/Analysis/SpecialFunctions/Trigonometric/Basic.olean \
         Mathlib/Analysis/Calculus/Deriv/Polynomial.olean \
         Mathlib/Analysis/Calculus/MeanValue.olean \
-        Mathlib/MeasureTheory/Integral/IntervalIntegral.olean \
+        Mathlib/MeasureTheory/Integral/IntervalIntegral/Basic.olean \
         Mathlib/Analysis/SpecialFunctions/Complex/Circle.olean ; do \
       p=".lake/packages/mathlib/.lake/build/lib/lean/$needed"; \
       if [ -f "$p" ]; then echo "  OK  $needed"; else echo "  MISS $needed"; fi; \
@@ -139,12 +139,12 @@ RUN set -eux; \
     # surface that here instead of in the test job.
     missing=0; \
     for needed in \
-        Mathlib/Topology/ContinuousFunction/Basic.olean \
+        Mathlib/Topology/ContinuousMap/Basic.olean \
         Mathlib/Analysis/SpecialFunctions/Trigonometric/Basic.olean \
         Mathlib/Analysis/SpecialFunctions/Complex/Circle.olean \
         Mathlib/Analysis/Calculus/Deriv/Polynomial.olean \
         Mathlib/Analysis/Calculus/MeanValue.olean \
-        Mathlib/MeasureTheory/Integral/IntervalIntegral.olean ; do \
+        Mathlib/MeasureTheory/Integral/IntervalIntegral/Basic.olean ; do \
       if [ ! -f "/opt/lean-path/$needed" ]; then \
         echo "FATAL: missing /opt/lean-path/$needed"; \
         missing=$((missing + 1)); \

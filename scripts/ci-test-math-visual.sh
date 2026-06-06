@@ -64,7 +64,7 @@ echo
 echo "=== Sanity: resolving Mathlib imports ==="
 smoke=$(mktemp --suffix=.lean)
 cat > "$smoke" <<'EOF'
-import Mathlib.Topology.ContinuousFunction.Basic
+import Mathlib.Topology.ContinuousMap.Basic
 import Mathlib.Analysis.SpecialFunctions.Trigonometric.Basic
 import Display
 #check (Continuous : (ℝ → ℝ) → Prop)

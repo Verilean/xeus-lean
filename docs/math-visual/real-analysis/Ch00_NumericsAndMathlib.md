@@ -110,7 +110,7 @@ limits via `Filter.Tendsto`.  We'll use them, alongside the `Float`
 plots, in every chapter that follows.
 
 ```lean
-import Mathlib.Topology.ContinuousFunction.Basic
+import Mathlib.Topology.ContinuousMap.Basic
 
 open scoped Topology
 

@@ -127,7 +127,7 @@ trustworthy.
 `Mathlib.Topology.ContinuousFunction` gives continuity on `ℝ`:
 
 ```lean
-import Mathlib.Topology.ContinuousFunction.Basic
+import Mathlib.Topology.ContinuousMap.Basic
 import Mathlib.Analysis.SpecialFunctions.Polynomials
 
 open scoped Topology
