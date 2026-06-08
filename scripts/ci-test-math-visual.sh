@@ -64,9 +64,12 @@ echo
 echo "=== Sanity: resolving Mathlib imports ==="
 smoke=$(mktemp --suffix=.lean)
 cat > "$smoke" <<'EOF'
+-- Display pulls in CommBus and a few other xeus-lean libs;
+-- import it BEFORE Mathlib so a missing local dep fails fast
+-- (rather than after lean has elaborated half of Mathlib).
+import Display
 import Mathlib.Topology.ContinuousMap.Basic
 import Mathlib.Analysis.SpecialFunctions.Trigonometric.Basic
-import Display
 #check (Continuous : (ℝ → ℝ) → Prop)
 EOF
 if lean "$smoke" ; then
@@ -84,8 +87,8 @@ else
       echo "--- $p/Mathlib top-level entries ---"
       ls -la "$p/Mathlib" | head -30
       if [ -d "$p/Mathlib/Topology" ]; then
-        echo "--- $p/Mathlib/Topology/ContinuousFunction ---"
-        ls -la "$p/Mathlib/Topology/ContinuousFunction" 2>&1 | head -10
+        echo "--- $p/Mathlib/Topology/ContinuousMap ---"
+        ls -la "$p/Mathlib/Topology/ContinuousMap" 2>&1 | head -10
       else
         echo "    (no $p/Mathlib/Topology directory)"
       fi

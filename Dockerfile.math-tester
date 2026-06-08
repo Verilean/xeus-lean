@@ -170,7 +170,13 @@ COPY CMakeLists.txt ./
 RUN lake build Display xlean-convert
 
 RUN install -m 0755 .lake/build/bin/xlean-convert /usr/local/bin/xlean-convert && \
-    cp .lake/build/lib/lean/Display.olean /opt/lean-path/Display.olean
+    # Stage Display and every olean it transitively depends on
+    # (CommBus, REPL, etc.).  Copying the single Display.olean is
+    # not enough — `import Display` chains through CommBus, and the
+    # smoke test then fails with "unknown module prefix 'CommBus'".
+    # Mirroring the whole .lake/build/lib/lean tree is the cheapest
+    # way to keep the dependency closure correct.
+    cp -r .lake/build/lib/lean/. /opt/lean-path/
 
 # ----------------------------------------------------------------------
 # Default LEAN_PATH so callers can just `xlean-convert --eval …` and
