@@ -126,7 +126,7 @@ import Sparkle
 open Sparkle.Core.Domain Sparkle.Core.Signal
 
 def counter4 : Signal defaultDomain (BitVec 4) :=
-  Signal.circuit do
+  circuit do
     let count ← Signal.reg 0#4
     count <~ count + 1#4
     return count

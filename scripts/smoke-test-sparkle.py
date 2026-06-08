@@ -30,17 +30,17 @@ CELL = textwrap.dedent("""\
     import Sparkle
     open Sparkle.Core.Domain Sparkle.Core.Signal
 
-    -- Build a tiny stateful counter via `Signal.circuit` and evaluate
-    -- it. This exercises the full path: import resolves, `Signal.reg`
-    -- macro expands, the circuit goes through `Signal.loop`, and the
-    -- C FFI symbol `sparkle_eval_at` is reachable from the
-    -- interpreter (only true if xlean was relinked against
-    -- libsparkle_*.a). A regression on any of those layers fails
-    -- this single cell.
+    -- Build a tiny stateful counter via Sparkle's `circuit do` DSL
+    -- and evaluate it. This exercises the full path: import resolves,
+    -- `Signal.reg` macro expands, the circuit goes through
+    -- `Signal.loop`, and the C FFI symbol `sparkle_eval_at` is
+    -- reachable from the interpreter (only true if xlean was relinked
+    -- against libsparkle_*.a). A regression on any of those layers
+    -- fails this single cell.
     def counter4 : Signal defaultDomain (BitVec 4) :=
-      Signal.circuit do
-        let count <- Signal.reg 0#4;
-        count <~ count + 1#4;
+      circuit do
+        let count <- Signal.reg 0#4
+        count <~ count + 1#4
         return count
 
     #eval IO.println s!"sparkle native: counter4(15)={(counter4.val 15).toNat}"
