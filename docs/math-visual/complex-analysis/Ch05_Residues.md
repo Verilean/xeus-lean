@@ -129,7 +129,7 @@ def trigIntegral : Float := Id.run do
 
 ## 5.5 — Formal sketch
 
-```lean
+```text
 %load mathlib
 ```
 

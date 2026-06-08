@@ -38,7 +38,7 @@ end ComplexF
 open ComplexF
 ```
 
-```lean
+```text
 %load mathlib
 ```
 

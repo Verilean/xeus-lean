@@ -162,7 +162,7 @@ def maxInDisk (f : ComplexF → ComplexF) (R : Float) (N : Nat) : Float := Id.ru
 
 ## 7.6 — Formal sketch
 
-```lean
+```text
 %load mathlib
 ```
 

@@ -44,7 +44,7 @@ open ComplexF
 For the formal cells later in the chapter we'll switch over to
 Mathlib's `Complex`.
 
-```lean
+```text
 %load mathlib
 ```
 

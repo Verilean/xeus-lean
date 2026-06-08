@@ -133,7 +133,7 @@ def modularDomainArea : Float := Id.run do
 
 ## 10.6 — Formal sketch
 
-```lean
+```text
 %load mathlib
 ```
 

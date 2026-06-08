@@ -70,7 +70,9 @@ chapter in this track imports it:
 structure ComplexF where
   re : Float
   im : Float
-deriving Repr, DecidableEq
+-- Float has no DecidableEq instance (IEEE 754 equality is finicky),
+-- so we only derive Repr; comparisons go through abs/etc. as needed.
+deriving Repr
 
 namespace ComplexF
 
@@ -176,8 +178,9 @@ Formally, via Mathlib:
 import Mathlib.Analysis.SpecialFunctions.Complex.Circle
 open Complex
 
-example : Complex.exp (Complex.I * (Real.pi : ℂ)) = -1 := by
-  -- Mathlib provides this as `Complex.exp_pi_mul_I`.
+example : Complex.exp ((Real.pi : ℂ) * Complex.I) = -1 := by
+  -- Mathlib spells it `cexp (↑Real.pi * Complex.I) = -1` as
+  -- `Complex.exp_pi_mul_I`.
   exact Complex.exp_pi_mul_I
 ```
 
@@ -188,7 +191,7 @@ cell *proves it*.
 
 Many later chapters end the formal section with a cell like
 
-```lean
+```text
 example : ... := by
   sorry
 ```
@@ -207,13 +210,13 @@ exercises.
 
 From Chapter 1 on, each chapter starts with:
 
-```lean
+```text
 %load mathlib       -- only if the chapter uses Mathlib lemmas
 ```
 
 then a cell that pulls in the numerical helper:
 
-```lean
+```text
 -- Inline the ComplexF definition (the kernel doesn't yet support
 -- cross-cell imports the way a project would).  Copy from §0.3
 -- above, or simply re-paste the block.

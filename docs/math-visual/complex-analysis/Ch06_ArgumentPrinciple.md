@@ -120,7 +120,7 @@ def countZerosInside (p : ComplexF → ComplexF) (R : Float) (N : Nat) : Float :
 
 ## 6.5 — Formal sketch
 
-```lean
+```text
 %load mathlib
 ```
 

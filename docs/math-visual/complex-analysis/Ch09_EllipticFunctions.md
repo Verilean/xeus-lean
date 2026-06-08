@@ -121,7 +121,7 @@ lattices with extra automorphisms.
 
 ## 9.5 — Formal sketch
 
-```lean
+```text
 %load mathlib
 ```
 

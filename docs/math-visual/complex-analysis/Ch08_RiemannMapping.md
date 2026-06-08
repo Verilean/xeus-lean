@@ -121,7 +121,7 @@ def cayleyGrid : List (List (Float × Float)) := Id.run do
 
 ## 8.6 — Formal sketch
 
-```lean
+```text
 %load mathlib
 ```
 
