@@ -463,6 +463,100 @@ extern "C" EMSCRIPTEN_KEEPALIVE void xlean_poll_load_progress()
 }
 #endif
 
+#ifdef __EMSCRIPTEN__
+// `%memory` magic: ask post.js for a heap/MEMFS/IDB snapshot and
+// pipe it to stdout.  Uses the same fire-and-forget + poll dance as
+// `%load` because navigator.storage.estimate() is async-only.
+EM_JS(void, xlean_memory_kick, (void), {
+    Module.__memorySnapshot = null;
+    Module.__memoryFail = null;
+    if (typeof Module.getMemoryStats !== 'function') {
+        Module.__memoryFail = 'getMemoryStats missing';
+        return;
+    }
+    Module.getMemoryStats().then(function (snap) {
+        Module.__memorySnapshot = snap;
+    }, function (e) {
+        Module.__memoryFail = String(e);
+    });
+});
+
+// 0 = still pending, 1 = ready, 2 = failed.
+EM_JS(int, xlean_memory_status, (void), {
+    if (Module.__memoryFail) return 2;
+    if (Module.__memorySnapshot) return 1;
+    return 0;
+});
+
+EM_JS(int, xlean_memory_text_to, (char* buf, int max_bytes), {
+    var s = (Module.__memorySnapshot && Module.__memorySnapshot.text) || '';
+    if (!s) return 0;
+    var n = lengthBytesUTF8(s);
+    stringToUTF8(s, Number(buf), max_bytes);
+    return n;
+});
+
+EM_JS(int, xlean_memory_fail_to, (char* buf, int max_bytes), {
+    var s = Module.__memoryFail || '';
+    if (!s) return 0;
+    var n = lengthBytesUTF8(s);
+    stringToUTF8(s, Number(buf), max_bytes);
+    return n;
+});
+
+// Memory poll state — same shape as g_load_ctx.
+struct MemoryCtx {
+    interpreter* self;
+    xeus::xinterpreter::send_reply_callback cb;
+};
+static std::unique_ptr<MemoryCtx> g_memory_ctx;
+
+extern "C" EMSCRIPTEN_KEEPALIVE void xlean_poll_memory();
+EM_JS(void, schedule_poll_memory, (int delay_ms), {
+    setTimeout(function () { Module._xlean_poll_memory(); }, delay_ms);
+});
+extern "C" EMSCRIPTEN_KEEPALIVE void xlean_poll_memory()
+{
+    if (!g_memory_ctx) return;
+    auto* c = g_memory_ctx.get();
+    int st = xlean_memory_status();
+    if (st == 0) { schedule_poll_memory(50); return; }
+    // Use a generous buffer — the snapshot text is ~500 bytes today
+    // but we'd like room for future fields.
+    static char buf[8192];
+    if (st == 1) {
+        int n = xlean_memory_text_to(buf, sizeof(buf));
+        buf[std::min(n, (int)sizeof(buf) - 1)] = '\0';
+        c->self->publish_stream("stdout", std::string(buf));
+        c->cb(xeus::create_successful_reply());
+    } else {
+        int n = xlean_memory_fail_to(buf, sizeof(buf));
+        buf[std::min(n, (int)sizeof(buf) - 1)] = '\0';
+        std::string err = n > 0 ? buf : "memory snapshot failed";
+        c->self->publish_execution_error("MemoryError", err, {err});
+        c->cb(xeus::create_error_reply(err, "MemoryError", nl::json::array()));
+    }
+    g_memory_ctx.reset();
+}
+#endif
+
+// Detect a single-line `%memory` magic.  Returns true iff the entire
+// trimmed cell body is `%memory`.
+static bool is_memory_magic(const std::string& code)
+{
+    size_t start = code.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) return false;
+    if (code.compare(start, 7, "%memory") != 0) return false;
+    size_t after = start + 7;
+    // Allow trailing whitespace / newlines but nothing else.
+    while (after < code.size()) {
+        char ch = code[after];
+        if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n') return false;
+        ++after;
+    }
+    return true;
+}
+
 // Detect a single-line `%load <name>` magic.  Returns the bundle
 // name if the entire (trimmed) cell body matches, otherwise "".
 static std::string detect_load_magic(const std::string& code)
@@ -523,6 +617,23 @@ void interpreter::execute_request_impl(send_reply_callback cb,
     // drains the JS-side progress queue every ~100 ms, forwarding lines
     // via publish_stream(), and finally calling the saved cb when
     // xlean_load_status() flips to 1 or 2.
+    // `%memory` first: it's a passive snapshot and cheaper than
+    // anything below.  Same fire-and-forget+poll pattern as %load
+    // because navigator.storage.estimate() is async.
+    if (is_memory_magic(code)) {
+#ifdef __EMSCRIPTEN__
+        xlean_memory_kick();
+        g_memory_ctx.reset(new MemoryCtx{this, std::move(cb)});
+        schedule_poll_memory(50);
+        return;
+#else
+        std::string err = "%memory is only supported in the WASM build";
+        publish_execution_error("MemoryError", err, {err});
+        cb(xeus::create_error_reply(err, "MemoryError", nl::json::array()));
+        return;
+#endif
+    }
+
     std::string load_name = detect_load_magic(code);
     if (!load_name.empty()) {
 #ifdef __EMSCRIPTEN__

@@ -58,6 +58,32 @@ The browser kernel ships without Mathlib by default to keep cold boot
 small.  Each chapter starts with a `%load mathlib` cell that pulls in
 the needed namespace chunks on demand.
 
+On Chrome the renderer's JS heap is capped at ~3.7 GB, so a session
+that combines `%load mathlib` + `import Mathlib.Tactic` + heavy
+tactics (`ring`, `simp` with the full Mathlib lemma set) can OOM
+once.  Two practical work-arounds:
+
+- **Restart the kernel after `%load mathlib`.**  The olean cache
+  lives in IndexedDB, so the next `import` reads from disk rather
+  than re-staging the Blob in heap.  The chapter then runs in a
+  much smaller footprint.
+- **Prefer narrow imports.**  `import Mathlib.Tactic.Ring` over
+  `import Mathlib.Tactic`, `import Mathlib.Topology.ContinuousMap.
+  Basic` over `import Mathlib`.
+
+To see where memory is going, run `%memory` in a cell:
+
+```text
+=== xeus-lean memory snapshot ===
+WASM linear memory: 1.83 GB  (Lean runtime + MEMFS combined)
+JS heap (V8):       412.7 MB / 3.62 GB (11%)
+MEMFS /lib/lean:    1.42 GB  (8132 files, sits inside WASM linear memory above)
+IndexedDB:          7.3 GB / 9.8 GB (74%, disk-only)
+```
+
+Sandwich any expensive cell between two `%memory` cells to see how
+much heap the elaboration cost.
+
 ## How a new chapter ships
 
 This subtree is wired into CI by `scripts/ci-build-docs.sh` and

@@ -562,15 +562,47 @@ Module.preRun.push(function () {
 
     // Pre-compute totals so the progress callback can show "N/total"
     // and "X% of <total MB>" without re-walking the manifest.
+    // Optional namespace filter — when the cell magic says
+    //   %load mathlib Topology Analysis.Calculus
+    // we only fetch+unpack the namespaces the user asked for, keeping
+    // the JupyterLite worker under Chrome's ~3.7 GB heap limit.  A
+    // namespace selector matches a module name when:
+    //   selector === name                      (exact)
+    //   selector === name.replace(/^Mathlib\./, '')  (Mathlib-relative)
+    //   name starts with selector + "."        (parent-of)
+    //   name starts with "Mathlib." + selector + "."   (Mathlib parent)
+    // An empty list means "load everything", matching the legacy
+    // `%load mathlib` behaviour.
+    var nsFilter = (opts.namespaces || []).filter(function (s) { return s.length > 0; });
+    function matchesFilter(name) {
+      if (nsFilter.length === 0) return true;
+      for (var k = 0; k < nsFilter.length; k++) {
+        var sel = nsFilter[k];
+        if (name === sel) return true;
+        if (name === 'Mathlib.' + sel) return true;
+        if (name.indexOf(sel + '.') === 0) return true;
+        if (name.indexOf('Mathlib.' + sel + '.') === 0) return true;
+      }
+      return false;
+    }
+    var selectedNames = names.filter(matchesFilter);
+    if (nsFilter.length > 0 && selectedNames.length === 0) {
+      onProgress('done', { written: 0, modules: 0,
+        warning: 'no modules in ' + manifestUrl + ' matched ' +
+                 JSON.stringify(nsFilter) });
+      Module._xleanSyncExpandedCache = false;
+      return { written: 0, modules: [], skipped: names.length };
+    }
+
     var totalBytes = 0;
-    for (var ti = 0; ti < names.length; ti++) {
-      totalBytes += (mods[names[ti]].size | 0);
+    for (var ti = 0; ti < selectedNames.length; ti++) {
+      totalBytes += (mods[selectedNames[ti]].size | 0);
     }
     var bytesSoFar = 0;
     function fmtMB(b) { return Math.round(b / 1024 / 1024); }
 
-    for (var ni = 0; ni < names.length; ni++) {
-      var name = names[ni];
+    for (var ni = 0; ni < selectedNames.length; ni++) {
+      var name = selectedNames[ni];
       var info = mods[name];
       var sizeMB = fmtMB(info.size | 0);
       var pct = totalBytes > 0
@@ -605,6 +637,111 @@ Module.preRun.push(function () {
     onProgress('done', { written: written, modules: names.length });
     Module._xleanSyncExpandedCache = false;
     return { written: written, modules: names };
+  };
+
+  // ---- 7. Memory introspection for `%memory` magic ----------------
+  //
+  // The `%memory` cell magic in the C++ interpreter calls this to get
+  // a human-readable snapshot of where memory is going.  The four
+  // categories that matter:
+  //
+  //   - WASM linear memory: backs Lean's runtime + MEMFS file contents.
+  //     This is the number that, if it crosses ~3.7 GB on Chrome,
+  //     trips the OOM in mathlib-loaded sessions.
+  //   - JS heap (V8): everything else — Blob refs, JS-side Maps,
+  //     fetch buffers.  Capped at jsHeapSizeLimit (~3.76 GB on Chrome
+  //     desktop) regardless of OS / 64-bit pointers.
+  //   - MEMFS contents: tally of bytes across /lib/lean/.  This sits
+  //     inside WASM linear memory, so it's part of the WASM number,
+  //     but breaking it out tells you "how much of WASM is olean".
+  //   - IndexedDB (navigator.storage.estimate): persistent disk
+  //     footprint of the olean cache.  Doesn't count against live
+  //     memory, but >7 GB means we'd benefit from pruning.
+  //
+  // Returns a Promise so the caller (xinterpreter_wasm.cpp) can await
+  // navigator.storage.estimate() rather than block on a sync API.
+  Module.getMemoryStats = async function () {
+    function mb(n) { return (n / 1024 / 1024).toFixed(1) + ' MB'; }
+    function gb(n) { return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB'; }
+    function pickUnit(n) { return n >= 1024 * 1024 * 1024 ? gb(n) : mb(n); }
+
+    var wasmBytes = (Module.HEAPU8 && Module.HEAPU8.byteLength) || 0;
+
+    var jsHeapUsed = 0, jsHeapLimit = 0;
+    if (typeof performance !== 'undefined' && performance.memory) {
+      jsHeapUsed = performance.memory.usedJSHeapSize || 0;
+      jsHeapLimit = performance.memory.jsHeapSizeLimit || 0;
+    }
+
+    // MEMFS walk: only count regular files under /lib/lean (oleans).
+    // FS.lookupPath throws if the prefix is missing; treat that as 0.
+    var memfsBytes = 0;
+    var memfsFiles = 0;
+    if (typeof FS !== 'undefined') {
+      try {
+        var visit = function (path) {
+          var node = FS.lookupPath(path, { follow: true }).node;
+          if (FS.isDir(node.mode)) {
+            for (var name in node.contents) {
+              if (name === '.' || name === '..') continue;
+              visit(path + '/' + name);
+            }
+          } else if (FS.isFile(node.mode)) {
+            memfsFiles++;
+            // MEMFS file size: node.usedBytes is the authoritative
+            // total (allocated Uint8Array length may exceed it).
+            memfsBytes += node.usedBytes != null
+              ? node.usedBytes
+              : ((node.contents && node.contents.length) || 0);
+          }
+        };
+        visit('/lib/lean');
+      } catch (e) {
+        // /lib/lean missing — first-boot before any olean loaded.
+      }
+    }
+
+    var idbBytes = 0, idbQuota = 0;
+    if (typeof navigator !== 'undefined' && navigator.storage &&
+        navigator.storage.estimate) {
+      try {
+        var est = await navigator.storage.estimate();
+        idbBytes = est.usage || 0;
+        idbQuota = est.quota || 0;
+      } catch (e) { /* ignore */ }
+    }
+
+    var lines = [];
+    lines.push('=== xeus-lean memory snapshot ===');
+    lines.push('WASM linear memory: ' + pickUnit(wasmBytes) +
+               '  (Lean runtime + MEMFS combined)');
+    if (jsHeapLimit > 0) {
+      var jsPct = Math.round(100 * jsHeapUsed / jsHeapLimit);
+      lines.push('JS heap (V8):       ' + pickUnit(jsHeapUsed) +
+                 ' / ' + pickUnit(jsHeapLimit) + ' (' + jsPct + '%)');
+    } else {
+      lines.push('JS heap (V8):       n/a (performance.memory unavailable)');
+    }
+    lines.push('MEMFS /lib/lean:    ' + pickUnit(memfsBytes) +
+               '  (' + memfsFiles + ' files, sits inside WASM linear memory above)');
+    if (idbQuota > 0) {
+      var idbPct = Math.round(100 * idbBytes / idbQuota);
+      lines.push('IndexedDB:          ' + pickUnit(idbBytes) +
+                 ' / ' + pickUnit(idbQuota) + ' (' + idbPct + '%, disk-only)');
+    } else {
+      lines.push('IndexedDB:          ' + pickUnit(idbBytes) + ' (quota unknown)');
+    }
+
+    return {
+      text: lines.join('\n') + '\n',
+      wasmBytes: wasmBytes,
+      jsHeapUsed: jsHeapUsed,
+      jsHeapLimit: jsHeapLimit,
+      memfsBytes: memfsBytes,
+      memfsFiles: memfsFiles,
+      idbBytes: idbBytes,
+      idbQuota: idbQuota,
+    };
   };
 
     Module.removeRunDependency(depTag);
