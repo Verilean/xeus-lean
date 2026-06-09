@@ -736,20 +736,25 @@ Module.preRun.push(function () {
       } catch (e) { /* ignore */ }
     }
 
-    // Lean's resident wasm cost = total wasm bytes minus what MEMFS
-    // explicitly accounts for.  In emscripten 3.x MEMFS lives in V8,
-    // so this is essentially the whole wasm number — keep both
-    // around so a future emscripten where MEMFS moves back into
-    // HEAP still reports usefully.
-    var leanWasmBytes = Math.max(0, wasmBytes - memfsBytes);
+    // Lean's resident wasm cost = the whole wasm number when MEMFS
+    // is JS-side (emscripten 3.x default), or wasm minus memfs when
+    // MEMFS is in HEAPU8.  Only show the breakdown in the latter
+    // case — otherwise it just prints the same number twice.
+    var leanWasmBytes = memfsInWasm === true
+      ? Math.max(0, wasmBytes - memfsBytes)
+      : wasmBytes;
     var wasmPct = Math.round(100 * wasmBytes / WASM_HARD_CAP);
+    var headroomBytes = Math.max(0, WASM_HARD_CAP - wasmBytes);
 
     var lines = [];
     lines.push('=== xeus-lean memory snapshot ===');
     lines.push('WASM linear memory: ' + pickUnit(wasmBytes) +
                ' / ' + pickUnit(WASM_HARD_CAP) +
-               ' (' + wasmPct + '%, Lean runtime — OOM hits at ~4 GB)');
-    lines.push('  ↳ Lean (excl. MEMFS): ' + pickUnit(leanWasmBytes));
+               ' (' + wasmPct + '%, ' + pickUnit(headroomBytes) +
+               ' headroom before OOM)');
+    if (memfsInWasm === true) {
+      lines.push('  ↳ Lean (excl. MEMFS): ' + pickUnit(leanWasmBytes));
+    }
     var memfsLoc = memfsInWasm === true ? 'inside HEAPU8 — counts against WASM cap'
                   : memfsInWasm === false ? 'standalone Uint8Array — costs V8 heap, not WASM'
                   : 'location unknown';
