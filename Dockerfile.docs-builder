@@ -1,3 +1,11 @@
+# Default empty "mathlib-oleans" stage.  When the caller passes
+#   --build-context mathlib-oleans=docker-image://ghcr.io/<owner>/xeus-lean-math-tester:latest
+# this gets overridden by the math-tester image (whose Mathlib oleans
+# live under /opt/lean-path).  Without the override the COPY below
+# pulls in an empty marker and the mathlib pack step skips.
+FROM scratch AS mathlib-oleans
+COPY scripts/empty-marker.txt /opt/lean-path/.empty
+
 # Dockerfile.docs-builder — prebuilt kernel + toolchain for the docs CI.
 #
 # What's inside:
@@ -115,6 +123,63 @@ RUN PREFIX=$(pixi info -e wasm-host --json 2>/dev/null \
       ls -lh /opt/xeus-lean/_olean; \
     else \
       echo "no oleans under $PREFIX, skipping pack"; \
+    fi
+
+# Pack a `mathlib` bundle when the build was given a mathlib-oleans
+# context (`--build-context mathlib-oleans=docker-image://ghcr.io/
+# <owner>/xeus-lean-math-tester:latest`).  Mathlib is split into one
+# tarball per top-level namespace; a single bundle would exceed
+# Chrome's worker fetch budget.  Manifest lands at
+# /opt/xeus-lean/_olean/manifest-mathlib.json so the runtime's
+# `%load mathlib` magic can find it next to the default oleans.
+COPY --from=mathlib-oleans /opt/lean-path /tmp/mathlib-olean
+RUN if [ -d /tmp/mathlib-olean ] && \
+       find /tmp/mathlib-olean -name '*.olean' -print -quit | grep -q . ; then \
+      mkdir -p /opt/xeus-lean/_olean && \
+      MODULES="Mathlib.Algebra \
+               Mathlib.AlgebraicGeometry \
+               Mathlib.AlgebraicTopology \
+               Mathlib.Analysis \
+               Mathlib.CategoryTheory.Limits \
+               Mathlib.CategoryTheory.Monoidal \
+               Mathlib.CategoryTheory.Sites \
+               Mathlib.CategoryTheory \
+               Mathlib.Combinatorics \
+               Mathlib.Computability \
+               Mathlib.Condensed \
+               Mathlib.Control \
+               Mathlib.Data \
+               Mathlib.Deprecated \
+               Mathlib.Dynamics \
+               Mathlib.FieldTheory \
+               Mathlib.Geometry \
+               Mathlib.GroupTheory \
+               Mathlib.InformationTheory \
+               Mathlib.Init \
+               Mathlib.Lean \
+               Mathlib.LinearAlgebra \
+               Mathlib.Logic \
+               Mathlib.MeasureTheory \
+               Mathlib.ModelTheory \
+               Mathlib.NumberTheory \
+               Mathlib.Order \
+               Mathlib.Probability \
+               Mathlib.RepresentationTheory \
+               Mathlib.RingTheory \
+               Mathlib.SetTheory \
+               Mathlib.Tactic \
+               Mathlib.Testing \
+               Mathlib.Topology \
+               Mathlib.Util \
+               Aesop Batteries ImportGraph Plausible Qq \
+               LeanSearchClient Cli ProofWidgets" \
+      MANIFEST_NAME=mathlib \
+        bash scripts/pack-olean-modules.sh /tmp/mathlib-olean /opt/xeus-lean/_olean "" && \
+      echo '=== mathlib bundle packed ===' && \
+      ls -lh /opt/xeus-lean/_olean/Mathlib*.tar.zst 2>/dev/null | head && \
+      ls -lh /opt/xeus-lean/_olean/manifest-mathlib.json; \
+    else \
+      echo "no mathlib build context supplied; skipping mathlib bundle"; \
     fi
 
 # Expose xlean-convert as a top-level binary so docs-deploy can just

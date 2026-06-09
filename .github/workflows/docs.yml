@@ -135,11 +135,25 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
+    - name: Resolve math-tester image for mathlib build-context
+      id: mathlib_ctx
+      run: |
+        # docs-builder consumes the math-tester image as build-context
+        # `mathlib-oleans` so its Mathlib oleans can be packed into the
+        # JupyterLite site without an extra Mathlib compile here.
+        # Prefer :latest (it tracks the last successful math-tester
+        # main build); fall back to the per-sha tag if this push just
+        # rebuilt math-tester.
+        owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
+        echo "image=docker-image://ghcr.io/${owner}/xeus-lean-math-tester:latest" >> $GITHUB_OUTPUT
+
     - name: Build & (conditionally) push docs-builder image
       uses: docker/build-push-action@v6
       with:
         context: .
         file: Dockerfile.docs-builder
+        build-contexts: |
+          mathlib-oleans=${{ steps.mathlib_ctx.outputs.image }}
         tags: |
           ${{ steps.tag.outputs.image }}:latest
           ${{ steps.tag.outputs.image }}:${{ github.sha }}
