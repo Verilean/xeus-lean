@@ -127,8 +127,11 @@ trustworthy.
 `Mathlib.Topology.ContinuousFunction` gives continuity on `ℝ`:
 
 ```lean
+import Mathlib.Topology.Instances.Real.Lemmas
+import Mathlib.Topology.Algebra.Monoid
 import Mathlib.Topology.ContinuousMap.Basic
-import Mathlib.Analysis.SpecialFunctions.Polynomials
+import Mathlib.Topology.MetricSpace.Basic
+import Mathlib.Topology.Order.IntermediateValue
 
 open scoped Topology
 

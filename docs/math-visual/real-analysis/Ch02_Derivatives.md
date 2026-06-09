@@ -149,7 +149,7 @@ give you the Lean side:
 
 ```lean
 import Mathlib.Analysis.Calculus.Deriv.Polynomial
-import Mathlib.Analysis.Calculus.MeanValue
+import Mathlib.Analysis.Calculus.Deriv.MeanValue
 
 open scoped Topology
 

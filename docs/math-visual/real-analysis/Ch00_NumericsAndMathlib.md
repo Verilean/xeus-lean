@@ -110,12 +110,14 @@ limits via `Filter.Tendsto`.  We'll use them, alongside the `Float`
 plots, in every chapter that follows.
 
 ```lean
+import Mathlib.Topology.Instances.Real.Lemmas
+import Mathlib.Topology.Algebra.Monoid
 import Mathlib.Topology.ContinuousMap.Basic
 
 open scoped Topology
 
 example : Continuous (fun x : ℝ => x^2 + 1) := by
-  exact continuous_pow 2 |>.add continuous_const
+  exact (continuous_pow 2).add continuous_const
 ```
 
 That's the rhythm.  Numerics on the left, formal statement on the

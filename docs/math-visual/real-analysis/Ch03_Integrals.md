@@ -141,21 +141,23 @@ open MeasureTheory intervalIntegral
 
 -- ∫₀¹ x² dx = 1/3 — closed form via the fundamental theorem.
 example : ∫ x in (0:ℝ)..1, x^2 = 1/3 := by
-  -- `integral_pow` packages ∫ x^n = (b^(n+1) - a^(n+1))/(n+1).
-  simp [integral_pow]
+  -- `integral_pow` rewrites to (b^(n+1) - a^(n+1))/(n+1); norm_num
+  -- finishes the arithmetic.
+  rw [integral_pow]; norm_num
 
 -- ∫₀^π sin x dx = 2.
 example : ∫ x in (0:ℝ)..Real.pi, Real.sin x = 2 := by
-  simp [integral_sin]
+  rw [integral_sin]; ring_nf; norm_num [Real.cos_pi]
 
 -- Fundamental theorem of calculus: integration is the inverse of
 -- differentiation.  `intervalIntegral.integral_eq_sub_of_hasDerivAt`
--- delivers the F(b) - F(a) form.
-example {f F : ℝ → ℝ} {a b : ℝ} (hab : a ≤ b)
-    (hF : ∀ x ∈ Set.Icc a b, HasDerivAt F (f x) x)
+-- delivers the F(b) - F(a) form (over the unordered interval
+-- `Set.uIcc a b`, which matches Set.Icc when a ≤ b).
+example {f F : ℝ → ℝ} {a b : ℝ}
+    (hF : ∀ x ∈ Set.uIcc a b, HasDerivAt F (f x) x)
     (hf : IntervalIntegrable f MeasureTheory.volume a b) :
     ∫ x in a..b, f x = F b - F a :=
-  integral_eq_sub_of_hasDerivAt (fun x hx => hF x hx) hf
+  integral_eq_sub_of_hasDerivAt hF hf
 ```
 
 The `F b - F a` on the right is the closed-form answer the numerical
