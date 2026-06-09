@@ -43,7 +43,8 @@ open ComplexF
 ```
 
 ```lean
-import Mathlib.Topology.Compactification.OnePoint
+import Mathlib.Analysis.Complex.Basic
+import Mathlib.Topology.Compactification.OnePoint.Basic
 ```
 
 ## 3.1 — Stereographic projection: the picture

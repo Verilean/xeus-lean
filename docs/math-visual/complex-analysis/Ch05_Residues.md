@@ -134,7 +134,7 @@ def trigIntegral : Float := Id.run do
 ```
 
 ```lean
-import Mathlib.Analysis.SpecialFunctions.Integrals
+import Mathlib.Analysis.SpecialFunctions.Integrals.Basic
 
 -- A formal statement of "∫_ℝ dx/(x²+1) = π":
 example : True := by

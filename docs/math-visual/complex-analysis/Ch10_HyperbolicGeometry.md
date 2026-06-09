@@ -139,6 +139,7 @@ def modularDomainArea : Float := Id.run do
 
 ```lean
 import Mathlib.Analysis.Complex.UpperHalfPlane.Basic
+import Mathlib.LinearAlgebra.Matrix.SpecialLinearGroup
 
 example : Type := UpperHalfPlane
 

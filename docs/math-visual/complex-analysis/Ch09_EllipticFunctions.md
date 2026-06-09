@@ -71,10 +71,14 @@ Numerical truncation (sum over $|m|, |n| \le N$):
 
 ```lean
 def wpApprox (z τ : ComplexF) (N : Nat) : ComplexF := Id.run do
-  let Nint : Int := Int.ofNat N
+  -- Iterate over Nat (Lean's `[a:b]` for-syntax only accepts Nat),
+  -- then shift into Int with `(i : Int) - N` so the lattice
+  -- coordinates run from -N to N inclusive.
   let mut acc : ComplexF := 1 / (z * z)
-  for m in [(-Nint : Int)..(Nint + 1)] do
-    for n in [(-Nint : Int)..(Nint + 1)] do
+  for i in [0:2*N+1] do
+    for j in [0:2*N+1] do
+      let m : Int := Int.ofNat i - Int.ofNat N
+      let n : Int := Int.ofNat j - Int.ofNat N
       if m == 0 ∧ n == 0 then continue
       let mC : ComplexF := ofReal (Float.ofInt m)
       let nC : ComplexF := ofReal (Float.ofInt n)
@@ -125,7 +129,12 @@ lattices with extra automorphisms.
 %load mathlib
 ```
 
-```lean
+```text
+-- The SL₂(ℤ) action on the upper half-plane is noncomputable in
+-- Mathlib (`UpperHalfPlane.SLAction`), so `lean --run` can't
+-- elaborate it.  Shown here as prose; load `Mathlib.NumberTheory.
+-- ModularForms.Basic` in a Lean editor to type-check it interactively.
+
 import Mathlib.NumberTheory.ModularForms.Basic
 
 example : Type := UpperHalfPlane

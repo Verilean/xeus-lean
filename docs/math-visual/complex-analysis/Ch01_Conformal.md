@@ -50,6 +50,7 @@ Mathlib's `Complex`.
 
 ```lean
 import Mathlib.Analysis.Complex.Basic
+import Mathlib.Analysis.Calculus.Deriv.Basic
 import Mathlib.Analysis.SpecialFunctions.Complex.Log
 ```
 
