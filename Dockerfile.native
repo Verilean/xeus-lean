@@ -36,9 +36,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # open in their browser when they `docker run` this image.
 RUN pip install --break-system-packages --no-cache-dir jupyter_client jupyterlab
 
-# Install Lean via elan
-RUN curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y --default-toolchain leanprover/lean4:v4.28.0
+# Install Lean via elan.  Pre-fetch the toolchain in the same layer
+# so a transient releases.lean-lang.org timeout fails *here* (where
+# bash retry works) rather than later under cmake/lake (where it
+# manifests as "Could not find LEAN_LIBRARY").  CI hit the latter on
+# run 27171954909.
 ENV PATH="/root/.elan/bin:${PATH}"
+RUN set -eu; \
+    for attempt in 1 2 3; do \
+      curl --retry 5 --retry-delay 5 --retry-connrefused \
+           https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf \
+        | sh -s -- -y --default-toolchain leanprover/lean4:v4.28.0 && break; \
+      echo "elan install attempt $attempt failed; retrying"; \
+      rm -rf /root/.elan; sleep 10; \
+    done; \
+    # Sanity-check: lean must actually be present after install.
+    lean --version
 
 WORKDIR /app
 COPY CMakeLists.txt lakefile.lean lake-manifest.json lean-toolchain /app/
