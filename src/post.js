@@ -642,30 +642,47 @@ Module.preRun.push(function () {
   // ---- 7. Memory introspection for `%memory` magic ----------------
   //
   // The `%memory` cell magic in the C++ interpreter calls this to get
-  // a human-readable snapshot of where memory is going.  The four
-  // categories that matter:
+  // a human-readable snapshot of where memory is going.
   //
-  //   - WASM linear memory: backs Lean's runtime + MEMFS file contents.
-  //     This is the number that, if it crosses ~3.7 GB on Chrome,
-  //     trips the OOM in mathlib-loaded sessions.
-  //   - JS heap (V8): everything else — Blob refs, JS-side Maps,
-  //     fetch buffers.  Capped at jsHeapSizeLimit (~3.76 GB on Chrome
-  //     desktop) regardless of OS / 64-bit pointers.
-  //   - MEMFS contents: tally of bytes across /lib/lean/.  This sits
-  //     inside WASM linear memory, so it's part of the WASM number,
-  //     but breaking it out tells you "how much of WASM is olean".
-  //   - IndexedDB (navigator.storage.estimate): persistent disk
-  //     footprint of the olean cache.  Doesn't count against live
-  //     memory, but >7 GB means we'd benefit from pruning.
+  // Three live-memory pools matter, and they are independent:
   //
-  // Returns a Promise so the caller (xinterpreter_wasm.cpp) can await
-  // navigator.storage.estimate() rather than block on a sync API.
+  //   - WASM linear memory (Module.HEAPU8.byteLength): the bytes
+  //     accessible to wasm load/store.  Backs Lean's runtime structs,
+  //     hash tables, the elab environment cache, GC heap, etc.
+  //     The hard ceiling Chrome enforces is 4 GB even under
+  //     -sMEMORY64=1 (V8 caps allocate-and-grow there), so this is
+  //     the number that triggers `RuntimeError: memory access out of
+  //     bounds` once Mathlib tactics are exercised.
+  //
+  //   - MEMFS file contents: emscripten 3.x stores `node.contents`
+  //     as plain Uint8Arrays *outside* the wasm linear memory — they
+  //     live in the JS-side V8 heap (as off-heap allocations for
+  //     large arrays).  An empty /lib/lean costs zero wasm bytes;
+  //     a 6 GB /lib/lean still costs zero wasm bytes.  So MEMFS is
+  //     not what blows the wasm ceiling.  It blows the tab's
+  //     resident-memory budget instead (visible in Chrome's task
+  //     manager as the renderer process size).
+  //
+  //   - V8 heap: everything else JS-side — Blob refs, fetch buffers,
+  //     the MEMFS Uint8Arrays' headers, our own Maps and Promises.
+  //     performance.memory is gated behind COOP/COEP cross-origin
+  //     isolation; the JupyterLite build doesn't request that, so
+  //     usedJSHeapSize comes back as `undefined` and we report n/a.
+  //
+  // Plus one disk number:
+  //
+  //   - IndexedDB (navigator.storage.estimate): persistent footprint
+  //     of the olean cache.  Doesn't count against live memory.
+  //
+  // Returns a Promise so the caller can await navigator.storage.
+  // estimate() rather than block on a sync API.
   Module.getMemoryStats = async function () {
     function mb(n) { return (n / 1024 / 1024).toFixed(1) + ' MB'; }
     function gb(n) { return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB'; }
     function pickUnit(n) { return n >= 1024 * 1024 * 1024 ? gb(n) : mb(n); }
 
     var wasmBytes = (Module.HEAPU8 && Module.HEAPU8.byteLength) || 0;
+    var WASM_HARD_CAP = 4 * 1024 * 1024 * 1024; // Chrome V8 cap.
 
     var jsHeapUsed = 0, jsHeapLimit = 0;
     if (typeof performance !== 'undefined' && performance.memory) {
@@ -675,8 +692,13 @@ Module.preRun.push(function () {
 
     // MEMFS walk: only count regular files under /lib/lean (oleans).
     // FS.lookupPath throws if the prefix is missing; treat that as 0.
+    // Also sample one file's `contents.buffer` to confirm whether
+    // MEMFS lives inside HEAPU8.buffer (= wasm linear memory) or in
+    // its own ArrayBuffer (= V8 heap).  Reported alongside the size.
     var memfsBytes = 0;
     var memfsFiles = 0;
+    var memfsInWasm = null; // true = inside HEAPU8, false = standalone, null = unknown
+    var heapBuf = Module.HEAPU8 ? Module.HEAPU8.buffer : null;
     if (typeof FS !== 'undefined') {
       try {
         var visit = function (path) {
@@ -693,6 +715,9 @@ Module.preRun.push(function () {
             memfsBytes += node.usedBytes != null
               ? node.usedBytes
               : ((node.contents && node.contents.length) || 0);
+            if (memfsInWasm === null && node.contents && node.contents.buffer) {
+              memfsInWasm = heapBuf != null && node.contents.buffer === heapBuf;
+            }
           }
         };
         visit('/lib/lean');
@@ -711,19 +736,32 @@ Module.preRun.push(function () {
       } catch (e) { /* ignore */ }
     }
 
+    // Lean's resident wasm cost = total wasm bytes minus what MEMFS
+    // explicitly accounts for.  In emscripten 3.x MEMFS lives in V8,
+    // so this is essentially the whole wasm number — keep both
+    // around so a future emscripten where MEMFS moves back into
+    // HEAP still reports usefully.
+    var leanWasmBytes = Math.max(0, wasmBytes - memfsBytes);
+    var wasmPct = Math.round(100 * wasmBytes / WASM_HARD_CAP);
+
     var lines = [];
     lines.push('=== xeus-lean memory snapshot ===');
     lines.push('WASM linear memory: ' + pickUnit(wasmBytes) +
-               '  (Lean runtime + MEMFS combined)');
+               ' / ' + pickUnit(WASM_HARD_CAP) +
+               ' (' + wasmPct + '%, Lean runtime — OOM hits at ~4 GB)');
+    lines.push('  ↳ Lean (excl. MEMFS): ' + pickUnit(leanWasmBytes));
+    var memfsLoc = memfsInWasm === true ? 'inside HEAPU8 — counts against WASM cap'
+                  : memfsInWasm === false ? 'standalone Uint8Array — costs V8 heap, not WASM'
+                  : 'location unknown';
+    lines.push('MEMFS /lib/lean:    ' + pickUnit(memfsBytes) +
+               '  (' + memfsFiles + ' files, ' + memfsLoc + ')');
     if (jsHeapLimit > 0) {
       var jsPct = Math.round(100 * jsHeapUsed / jsHeapLimit);
       lines.push('JS heap (V8):       ' + pickUnit(jsHeapUsed) +
                  ' / ' + pickUnit(jsHeapLimit) + ' (' + jsPct + '%)');
     } else {
-      lines.push('JS heap (V8):       n/a (performance.memory unavailable)');
+      lines.push('JS heap (V8):       n/a (performance.memory needs COOP/COEP)');
     }
-    lines.push('MEMFS /lib/lean:    ' + pickUnit(memfsBytes) +
-               '  (' + memfsFiles + ' files, sits inside WASM linear memory above)');
     if (idbQuota > 0) {
       var idbPct = Math.round(100 * idbBytes / idbQuota);
       lines.push('IndexedDB:          ' + pickUnit(idbBytes) +
@@ -735,6 +773,8 @@ Module.preRun.push(function () {
     return {
       text: lines.join('\n') + '\n',
       wasmBytes: wasmBytes,
+      wasmHardCap: WASM_HARD_CAP,
+      leanWasmBytes: leanWasmBytes,
       jsHeapUsed: jsHeapUsed,
       jsHeapLimit: jsHeapLimit,
       memfsBytes: memfsBytes,

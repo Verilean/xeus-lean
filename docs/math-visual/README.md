@@ -58,31 +58,46 @@ The browser kernel ships without Mathlib by default to keep cold boot
 small.  Each chapter starts with a `%load mathlib` cell that pulls in
 the needed namespace chunks on demand.
 
-On Chrome the renderer's JS heap is capped at ~3.7 GB, so a session
-that combines `%load mathlib` + `import Mathlib.Tactic` + heavy
-tactics (`ring`, `simp` with the full Mathlib lemma set) can OOM
-once.  Two practical work-arounds:
+Chrome caps **WASM linear memory** at 4 GB per tab even under
+`-sMEMORY64=1`.  That's the number that trips
+`RuntimeError: memory access out of bounds` once you combine
+`%load mathlib` + `import Mathlib.Tactic` + heavy tactics.  Two
+practical work-arounds:
 
-- **Restart the kernel after `%load mathlib`.**  The olean cache
-  lives in IndexedDB, so the next `import` reads from disk rather
-  than re-staging the Blob in heap.  The chapter then runs in a
-  much smaller footprint.
-- **Prefer narrow imports.**  `import Mathlib.Tactic.Ring` over
-  `import Mathlib.Tactic`, `import Mathlib.Topology.ContinuousMap.
-  Basic` over `import Mathlib`.
+- **Prefer narrow imports.**  `import Mathlib.Tactic.Ring` instead
+  of `import Mathlib.Tactic`, `import Mathlib.Topology.ContinuousMap.
+  Basic` instead of `import Mathlib`.  `import Mathlib.Tactic` alone
+  adds ~1.8 GB to the wasm cap; a single subsequent `by ring` then
+  has only ~1.4 GB of headroom before OOM.
+- **If you do load the umbrella, do it once per session and don't
+  exercise heavy tactics.**  Restart the kernel between exploration
+  blocks if the wasm number nears 3 GB.
 
-To see where memory is going, run `%memory` in a cell:
+To watch where memory is going, run `%memory` in a cell:
 
 ```text
 === xeus-lean memory snapshot ===
-WASM linear memory: 1.83 GB  (Lean runtime + MEMFS combined)
-JS heap (V8):       412.7 MB / 3.62 GB (11%)
-MEMFS /lib/lean:    1.42 GB  (8132 files, sits inside WASM linear memory above)
-IndexedDB:          7.3 GB / 9.8 GB (74%, disk-only)
+WASM linear memory: 2.79 GB / 4.00 GB (69%, Lean runtime — OOM hits at ~4 GB)
+  ↳ Lean (excl. MEMFS): 2.79 GB
+MEMFS /lib/lean:    6.77 GB  (46844 files, standalone Uint8Array — costs V8 heap, not WASM)
+JS heap (V8):       n/a (performance.memory needs COOP/COEP)
+IndexedDB:          6.80 GB / 16.80 GB (40%, disk-only)
 ```
 
+Two things worth knowing about that output:
+
+- **MEMFS does not count against the wasm cap.**  emscripten 3.x
+  stores file contents in standalone `Uint8Array`s in the V8 heap,
+  so a 6 GB /lib/lean is fine — what kills the tab is the wasm
+  number on the top line.
+- **`%memory` reports JS heap as `n/a`** because the site doesn't
+  set COOP/COEP headers, which Chrome now requires to expose
+  `performance.memory`.  The OS task manager's "Memory footprint"
+  column is the practical fallback for the V8 heap.
+
 Sandwich any expensive cell between two `%memory` cells to see how
-much heap the elaboration cost.
+much wasm the elaboration cost — the delta on the first line is the
+actual budget you have left.
 
 ## How a new chapter ships
 
