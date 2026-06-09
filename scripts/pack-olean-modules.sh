@@ -109,17 +109,27 @@ for MOD in $MODULES; do
     FILE_COUNT=$(printf '%s\n' $PATTERNS $SUBTREE_FILES | grep -c . || true)
     echo "[pack] $MOD: $FILE_COUNT files → $ASSET" >&2
 
-    # Build tarball; pipe through zstd -19 (good ratio, reasonable speed).
-    # GNU tar reads from stdin file list with -T -.
+    # Build tarball; pipe through zstd.  Default level is 12 because
+    # 19→12 cuts wall-clock ~10× on the GHA runner (2 vCPU) while
+    # blowing the tarball up by less than 5 % on our olean corpus:
+    #
+    #   level | Mathlib/CategoryTheory wall | size
+    #   ------+----------------------------+------
+    #   -19   | 7.4 s                      | 12 MB
+    #   -15   | 1.6 s                      | 13 MB
+    #   -12   | 0.6 s                      | 13 MB
+    #
+    # Override with ZSTD_LEVEL when you want a release-grade bundle.
+    ZSTD_LEVEL="${ZSTD_LEVEL:--12}"
     {
         for p in $PATTERNS; do echo "$p"; done
         printf '%s\n' $SUBTREE_FILES
     } | tar --create --files-from=- --dereference \
             --owner=0 --group=0 --mtime='1970-01-01' \
-        | zstd -19 -T0 -f -q -c > "$OUT_TAR"
+        | zstd "$ZSTD_LEVEL" -T0 -f -q -c > "$OUT_TAR"
 
     SIZE=$(stat -c '%s' "$OUT_TAR")
-    echo "[pack] $MOD: $SIZE bytes (zstd -19)" >&2
+    echo "[pack] $MOD: $SIZE bytes (zstd $ZSTD_LEVEL)" >&2
 
     if [ $FIRST -eq 1 ]; then FIRST=0; else MANIFEST_JSON="$MANIFEST_JSON,"; fi
     MANIFEST_JSON="$MANIFEST_JSON\"$MOD\":{\"asset\":\"$ASSET\",\"size\":$SIZE,\"files\":$FILE_COUNT}"
