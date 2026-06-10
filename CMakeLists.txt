@@ -312,6 +312,99 @@ ${_init_stub_decls}}
             " -Wl,--whole-archive ${_sparkle_archive} -Wl,--no-whole-archive -sEXPORTED_FUNCTIONS=@${_sparkle_exports_file}")
         add_dependencies(xlean sparkle_wasm)
     endif()
+    # ========================================================================
+    # Extra static libraries (optional) — wired via -DEXTRA_WASM_DIRS
+    # ========================================================================
+    # Generic mechanism for third-party Lean libraries (Hesper, future ones)
+    # to plug their WASM build into xlean without xeus-lean knowing their
+    # name.  Each entry in EXTRA_WASM_DIRS points at a staging directory
+    # produced by the third-party project's own build script and must
+    # contain `xeus-lean-extra.json` describing what to wire in:
+    #
+    #   {
+    #     "archive":   "lib/libhesper_wasm.a",
+    #     "exports":   "lib/hesper_exports.txt",
+    #     "olean_root": "Hesper"        # top-level Lean module name
+    #   }
+    #
+    # The archive is whole-archived into xlean (Lean externs are
+    # dynamically resolved so wasm-ld would otherwise DCE them), the
+    # exports file is splatted into emcc's -sEXPORTED_FUNCTIONS, and the
+    # olean tree under <dir>/<olean_root>/ is copied into OLEAN_ASSETS_DIR
+    # alongside Init / Std / Lean / Sparkle (see the LEAN_OLEAN_SRC block
+    # below).  The "module" name only lives inside the manifest — xeus-lean
+    # never hard-codes it.
+    #
+    # Legacy: -DHESPER_WASM_DIR=<dir> is honoured by synthesising an
+    # EXTRA_WASM_DIRS entry on the fly so existing Hesper recipes keep
+    # working without their build script being updated.
+    if(DEFINED HESPER_WASM_DIR AND NOT "${HESPER_WASM_DIR}" STREQUAL "")
+        message(STATUS "HESPER_WASM_DIR is deprecated; use EXTRA_WASM_DIRS=${HESPER_WASM_DIR}")
+        list(APPEND EXTRA_WASM_DIRS "${HESPER_WASM_DIR}")
+        # Hesper's pre-manifest build script doesn't ship the JSON;
+        # synthesise one in the binary dir.
+        set(_legacy_manifest "${CMAKE_BINARY_DIR}/hesper_legacy_extra.json")
+        file(WRITE "${_legacy_manifest}"
+"{\n  \"archive\": \"lib/libhesper_wasm.a\",\n  \"exports\": \"lib/hesper_exports.txt\",\n  \"olean_root\": \"Hesper\"\n}\n")
+        if(NOT EXISTS "${HESPER_WASM_DIR}/xeus-lean-extra.json")
+            file(COPY "${_legacy_manifest}" DESTINATION "${HESPER_WASM_DIR}/"
+                 FILES_MATCHING PATTERN "hesper_legacy_extra.json")
+            file(RENAME "${HESPER_WASM_DIR}/hesper_legacy_extra.json"
+                       "${HESPER_WASM_DIR}/xeus-lean-extra.json")
+        endif()
+    endif()
+
+    set(_extra_olean_specs "")   # filled in below, consumed by the
+                                 # olean stage near LEAN_OLEAN_SRC.
+    foreach(_extra_dir IN LISTS EXTRA_WASM_DIRS)
+        set(_manifest "${_extra_dir}/xeus-lean-extra.json")
+        if(NOT EXISTS "${_manifest}")
+            message(FATAL_ERROR
+                "EXTRA_WASM_DIRS entry ${_extra_dir} is missing xeus-lean-extra.json.\n"
+                "Expected schema:\n"
+                "  { \"archive\": \"lib/libNAME_wasm.a\",\n"
+                "    \"exports\": \"lib/NAME_exports.txt\",\n"
+                "    \"olean_root\": \"TopLevelModule\" }")
+        endif()
+        file(READ "${_manifest}" _meta)
+        string(JSON _rel_archive   GET "${_meta}" archive)
+        string(JSON _rel_exports   GET "${_meta}" exports)
+        # `olean_root` is optional — a pure C library (no Lean side) can
+        # omit it.  string(JSON) errors fatally on a missing key, so probe
+        # first via the "MEMBER" query.
+        string(JSON _olean_root ERROR_VARIABLE _err GET "${_meta}" olean_root)
+        if(_err)
+            set(_olean_root "")
+        endif()
+
+        set(_archive "${_extra_dir}/${_rel_archive}")
+        set(_exports "${_extra_dir}/${_rel_exports}")
+        if(NOT EXISTS "${_archive}")
+            message(FATAL_ERROR "EXTRA_WASM_DIRS: ${_archive} is missing — rerun the third-party build script")
+        endif()
+        if(NOT EXISTS "${_exports}")
+            message(FATAL_ERROR "EXTRA_WASM_DIRS: ${_exports} is missing — rerun the third-party build script")
+        endif()
+
+        file(STRINGS "${_exports}" _syms)
+        list(LENGTH _syms _n_syms)
+        list(JOIN _syms "," _csv)
+        get_filename_component(_exports_stem "${_exports}" NAME_WE)
+        set(_exports_emcc "${CMAKE_BINARY_DIR}/${_exports_stem}_emcc.txt")
+        file(WRITE "${_exports_emcc}" "[${_csv}]")
+        message(STATUS "EXTRA_WASM_DIRS: linking ${_archive} (${_n_syms} symbols, "
+                "manifest=${_manifest})")
+        set_property(TARGET xlean APPEND_STRING PROPERTY LINK_FLAGS
+            " -Wl,--whole-archive ${_archive} -Wl,--no-whole-archive -sEXPORTED_FUNCTIONS=@${_exports_emcc}")
+
+        if(_olean_root)
+            # Defer the olean copy until the LEAN_OLEAN_SRC block sets up
+            # OLEAN_ASSETS_DIR.  Encode "<dir>|<root>" so a single foreach
+            # later can dispatch.
+            list(APPEND _extra_olean_specs "${_extra_dir}|${_olean_root}")
+        endif()
+    endforeach()
+
     # Link stage0 libraries (order matters: REPL -> Lean -> Std -> Init -> leanrt)
     target_link_libraries(xlean PRIVATE
         ${STAGE0_REPL_LIB}
@@ -566,6 +659,42 @@ ${_init_stub_decls}}
             else()
                 message(STATUS "Sparkle .olean not found")
             endif()
+
+            # Stage third-party olean trees declared via EXTRA_WASM_DIRS.
+            # Each spec is "<dir>|<olean_root>" — copy
+            # <dir>/<root>{,/**}.{olean,olean.private,olean.server,ir,ilean}
+            # into ${OLEAN_ASSETS_DIR}.  Same shape as the Sparkle branch
+            # above; the loop has zero hard-coded module names.
+            foreach(_spec IN LISTS _extra_olean_specs)
+                string(REPLACE "|" ";" _parts "${_spec}")
+                list(GET _parts 0 _src_dir)
+                list(GET _parts 1 _root)
+                if(NOT IS_DIRECTORY "${_src_dir}/${_root}")
+                    message(WARNING
+                        "EXTRA_WASM_DIRS: ${_src_dir} declared olean_root="
+                        "${_root} but ${_src_dir}/${_root}/ is missing — skipping")
+                    continue()
+                endif()
+                foreach(_ext olean olean.private)
+                    if(EXISTS "${_src_dir}/${_root}.${_ext}")
+                        file(COPY "${_src_dir}/${_root}.${_ext}"
+                             DESTINATION "${OLEAN_ASSETS_DIR}/")
+                    endif()
+                endforeach()
+                file(GLOB_RECURSE _EXTRA_FILES RELATIVE "${_src_dir}"
+                    "${_src_dir}/${_root}/*.olean"
+                    "${_src_dir}/${_root}/*.olean.server"
+                    "${_src_dir}/${_root}/*.olean.private"
+                    "${_src_dir}/${_root}/*.ir"
+                    "${_src_dir}/${_root}/*.ilean")
+                list(LENGTH _EXTRA_FILES _extra_count)
+                foreach(_f ${_EXTRA_FILES})
+                    get_filename_component(_dir "${_f}" DIRECTORY)
+                    file(MAKE_DIRECTORY "${OLEAN_ASSETS_DIR}/${_dir}")
+                    file(COPY "${_src_dir}/${_f}" DESTINATION "${OLEAN_ASSETS_DIR}/${_dir}/")
+                endforeach()
+                message(STATUS "EXTRA_WASM_DIRS: ${_root}: ${_extra_count} files → olean_assets")
+            endforeach()
 
             # Generate manifest.json listing all .olean asset files
             file(GLOB_RECURSE _ALL_ASSET_FILES
