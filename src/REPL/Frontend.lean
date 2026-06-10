@@ -92,50 +92,72 @@ def processInput (input : String) (cmdState? : Option Command.State)
   IO.eprintln "[processInput] initSearchPath done"
   enableInitializersExecution
   let fileName   := fileName.getD "<input>"
-  -- Auto-import Display (and, when present, Sparkle / Hesper) on the
-  -- first cell. Why: the Lean REPL only allows `import` at the very
+  -- Auto-import Display + any extras the deployment declared on the
+  -- first cell.  Why: the Lean REPL only allows `import` at the very
   -- start of a "file", and each cell after the first reuses the prior
   -- cmdState — so once any cell has run, the user can no longer
-  -- import anything. We pre-inject the imports that ship with the
-  -- kernel so `#help_x`, `Display.html`, etc. work without the user
+  -- import anything.  We pre-inject the imports the kernel ships
+  -- with so `#help_x`, `Display.html`, etc. work without the user
   -- having to remember to put `import Display` in cell 1.
   --
   -- The auto-import only runs when `cmdState?` is `none` (i.e. the
-  -- very first cell). User code in that cell still runs after the
-  -- imports — anything the user typed is concatenated.
+  -- very first cell).  User code in that cell still runs after the
+  -- imports.
   --
-  -- WASM gates each pre-import on the olean being in the embedded
-  -- VFS (because trimmed-down WASM kernels may drop Sparkle/Hesper).
-  -- Native always ships Display via lean-toolchain, but Sparkle and
-  -- Hesper may be absent in the base image; gate those by checking
-  -- their olean path in the build's lean search path.
+  -- Extension: a downstream lib (anything shipped via EXTRA_WASM_DIRS)
+  -- registers its own auto-imports by writing one module name per
+  -- line into a file under one of these names somewhere on the
+  -- search path:
+  --
+  --     /lib/lean/.xeus-auto-imports          (WASM VFS)
+  --     <root>/.xeus-auto-imports             (each native search root)
+  --
+  -- Lines starting with `#` and blank lines are ignored.  Each
+  -- listed module is imported only if its olean is actually
+  -- present (so an outdated registry doesn't fail elaboration).
+  -- xeus-lean itself names no third-party module — they appear
+  -- only inside the .xeus-auto-imports file the third-party build
+  -- script writes.
   let input ←
     if cmdState?.isNone then do
-      let imports ← if isWasm then do
-        let hasSparkle ← (System.FilePath.mk "/lib/lean/Sparkle.olean").pathExists
-        let hasHesper  ← (System.FilePath.mk "/lib/lean/Hesper/WGSL/DSL.olean").pathExists
-        pure <|
-          "import Display\n"
-          ++ (if hasSparkle then "import Sparkle\n" else "")
-          ++ (if hasHesper  then "import Hesper.WGSL.DSL\n" else "")
-      else do
-        -- Probe for each module via LEAN_PATH (set by the kernelspec).
-        -- A module foo.bar.Baz lives at <root>/foo/bar/Baz.olean for
-        -- some root in LEAN_PATH; if none of those roots has the
-        -- file, the module isn't available and we skip its import.
-        let leanPath ← Lean.searchPathRef.get
-        let probe (rel : System.FilePath) : IO Bool := do
-          for root in leanPath do
-            if (← (root / rel).pathExists) then return true
-          return false
-        let hasDisplay ← probe ("Display.olean" : System.FilePath)
-        let hasSparkle ← probe ("Sparkle.olean" : System.FilePath)
-        let hasHesper  ← probe (("Hesper" : System.FilePath) / "WGSL" / "DSL.olean")
-        pure <|
-          (if hasDisplay then "import Display\n" else "")
-          ++ (if hasSparkle then "import Sparkle\n" else "")
-          ++ (if hasHesper  then "import Hesper.WGSL.DSL\n" else "")
-      pure (imports ++ input)
+      -- 1. Compute the list of search roots to probe.  WASM uses the
+      --    fixed /lib/lean prefix because LEAN_PATH isn't populated
+      --    from the kernelspec there; native uses the search path.
+      let roots ← if isWasm then
+        pure [System.FilePath.mk "/lib/lean"]
+      else
+        Lean.searchPathRef.get
+      let oleanExists (mod : String) : IO Bool := do
+        let rel : System.FilePath := System.FilePath.mk (mod.replace "." "/" ++ ".olean")
+        for root in roots do
+          if (← (root / rel).pathExists) then return true
+        return false
+      -- 2. Always-on auto-import is just Display.  Anything else is
+      --    sourced from .xeus-auto-imports registries.
+      let coreImports := if (← oleanExists "Display") then "import Display\n" else ""
+      -- 3. Read each .xeus-auto-imports file under the search roots
+      --    and collect distinct module names.
+      let mut extras : List String := []
+      let mut seen : Std.HashSet String := {}
+      for root in roots do
+        let registry := root / ".xeus-auto-imports"
+        if ← registry.pathExists then
+          let body ← IO.FS.readFile registry
+          for line in body.splitOn "\n" do
+            let line := line.trim
+            if line.isEmpty || line.startsWith "#" then continue
+            if seen.contains line then continue
+            seen := seen.insert line
+            extras := extras ++ [line]
+      -- 4. Drop registry entries whose olean is missing — keeps a
+      --    stale list from breaking the first cell.
+      let mut extraImports := ""
+      for mod in extras do
+        if ← oleanExists mod then
+          extraImports := extraImports ++ s!"import {mod}\n"
+        else
+          IO.eprintln s!"[processInput] .xeus-auto-imports: skipping `{mod}` (olean not found)"
+      pure (coreImports ++ extraImports ++ input)
     else
       pure input
   let inputCtx   := Parser.mkInputContext input fileName
@@ -149,12 +171,13 @@ def processInput (input : String) (cmdState? : Option Command.State)
     let initOlean := System.FilePath.mk "/lib/lean/Init.olean"
     let initDir := System.FilePath.mk "/lib/lean/Init"
     let initOleanExists ← initOlean.pathExists
-    -- Check additional modules
+    -- Check core modules (Std/Lean/Display).  Anything else lives
+    -- under a third-party search root and isn't worth a diagnostic
+    -- here — the auto-import block above already logged misses.
     let stdOlean ← (System.FilePath.mk "/lib/lean/Std.olean").pathExists
     let leanOlean ← (System.FilePath.mk "/lib/lean/Lean.olean").pathExists
-    let sparkleOlean ← (System.FilePath.mk "/lib/lean/Sparkle.olean").pathExists
     let displayOlean ← (System.FilePath.mk "/lib/lean/Display.olean").pathExists
-    IO.eprintln s!"[processInput] Std.olean={stdOlean} Lean.olean={leanOlean} Sparkle.olean={sparkleOlean} Display.olean={displayOlean}"
+    IO.eprintln s!"[processInput] Std.olean={stdOlean} Lean.olean={leanOlean} Display.olean={displayOlean}"
     let initDirExists ← initDir.isDir
     IO.eprintln s!"[processInput] /lib/lean/Init.olean exists={initOleanExists}, /lib/lean/Init isDir={initDirExists}"
     let sp ← Lean.searchPathRef.get
