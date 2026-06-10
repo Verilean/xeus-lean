@@ -1,14 +1,16 @@
 # Dockerfile.native — xeus-lean base image (kernel + Display lib).
 #
-# Published as `ghcr.io/verilean/xeus-lean:latest`. Project-specific
-# downstream images (Sparkle, Hesper, ...) FROM this and use the
-# generic `XEUS_LEAN_EXTRA_LIBS` extension point declared in
-# `lakefile.lean` to thread their own static libraries into xlean.
+# Published as `ghcr.io/verilean/xeus-lean:latest`. Downstream
+# projects FROM this and use the generic `XEUS_LEAN_EXTRA_LIBS`
+# extension point declared in `lakefile.lean` to thread their own
+# static libraries into xlean.  See README.md ("Extending the
+# kernel with your own Lean lib") and `tests/fixtures/mock-extra/`
+# for the worked example.
 #
 # Run as a JupyterLab server:
 #   docker run --rm -it -p 8888:8888 ghcr.io/verilean/xeus-lean:latest
 #
-# Or as a Sparkle/Hesper base:
+# Or as the base for a downstream image:
 #   FROM ghcr.io/verilean/xeus-lean:latest
 #   COPY my-lib/ /app/my-lib/
 #   RUN cd /app/my-lib && lake build mylib

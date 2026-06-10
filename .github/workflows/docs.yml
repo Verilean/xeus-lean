@@ -63,7 +63,6 @@ jobs:
             - 'lean-toolchain'
             - 'pixi.toml'
             - 'pixi.lock'
-            - 'examples/sparkle/**'
             - 'scripts/**'
             - 'Dockerfile.docs-builder'
             - '.github/workflows/docs.yml'
