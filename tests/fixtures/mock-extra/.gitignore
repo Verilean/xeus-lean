@@ -1,0 +1,3 @@
+.lake/
+.cache/
+build-wasm/
