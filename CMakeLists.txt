@@ -148,214 +148,46 @@ if(EMSCRIPTEN)
 
     # xlean WASM executable
     # ======================
-
-    # Sparkle C FFI implementations + Lean-compiled IR sources.
-    # Needed for Signal.sample / Signal.circuit in the WASM REPL.
-    # The Lean interpreter looks up `@[extern]` decls by their mangled
-    # `lp_sparkle___private_...___boxed` name, which lives in the .c
-    # files Lean generated under .lake/build/ir/. We copy all sources
-    # to the build dir with a .cpp extension so CMake's C++17 flag
-    # doesn't reject a .c file. To prevent wasm-ld DCE from stripping
-    # these symbols (nothing in main references them; the interpreter
-    # resolves them dynamically), we wrap them in a static archive
-    # and link with --whole-archive.
-    set(SPARKLE_ROOT "${CMAKE_SOURCE_DIR}/examples/sparkle/.lake/packages/sparkle")
-    set(SPARKLE_C_BARRIER "${SPARKLE_ROOT}/c_src/sparkle_barrier.c")
-    set(SPARKLE_IR_DIR "${SPARKLE_ROOT}/.lake/build/ir")
-    set(SPARKLE_WASM_SOURCES)
-    if(EXISTS "${SPARKLE_C_BARRIER}")
-        # Wrap in extern "C" so the C++ compiler does not name-mangle
-        # sparkle_cache_get / sparkle_eval_at. The callers (Signal.c)
-        # reference them as plain C symbols.
-        file(READ "${SPARKLE_C_BARRIER}" _barrier_body)
-        # #include must stay outside extern "C" (lean.h pulls in C++
-        # headers that must have C++ linkage). Strip the original
-        # #include lines and emit them before the extern "C" block.
-        string(REGEX MATCHALL "#include[^\n]*\n" _barrier_includes "${_barrier_body}")
-        string(REGEX REPLACE "#include[^\n]*\n" "" _barrier_body_no_inc "${_barrier_body}")
-        string(JOIN "" _barrier_inc_str ${_barrier_includes})
-        # WASM debug: rename the upstream functions to *_impl so we can
-        # wrap them with call-counter logging that prints to stderr.
-        # Useful for diagnosing simulation hangs in the WASM REPL.
-        string(REPLACE "sparkle_cache_get" "sparkle_cache_get_impl" _barrier_body_no_inc "${_barrier_body_no_inc}")
-        string(REPLACE "sparkle_eval_at" "sparkle_eval_at_impl" _barrier_body_no_inc "${_barrier_body_no_inc}")
-        set(SPARKLE_C_CPP "${CMAKE_BINARY_DIR}/sparkle_barrier.cpp")
-        file(WRITE "${SPARKLE_C_CPP}"
-"${_barrier_inc_str}
-#include <cstdio>
-extern \"C\" {
-${_barrier_body_no_inc}
-
-// Wrappers that print every Nth call to stderr — surfaces in the
-// browser console as `[sparkle_eval_at] call #...`.
-LEAN_EXPORT lean_obj_res sparkle_cache_get(b_lean_obj_arg ref, b_lean_obj_arg t_obj, lean_obj_arg fallback) {
-    static unsigned long n = 0;
-    if ((++n & 0xFFF) == 1) std::fprintf(stderr, \"[sparkle_cache_get] call #%lu\\n\", n);
-    return sparkle_cache_get_impl(ref, t_obj, fallback);
-}
-LEAN_EXPORT lean_obj_res sparkle_eval_at(b_lean_obj_arg signal_val, b_lean_obj_arg t, lean_obj_arg world) {
-    static unsigned long n = 0;
-    if ((++n & 0x3F) == 1) std::fprintf(stderr, \"[sparkle_eval_at] call #%lu (t=%lu)\\n\", n, lean_unbox(t));
-    return sparkle_eval_at_impl(signal_val, t, world);
-}
-}
-")
-        list(APPEND SPARKLE_WASM_SOURCES "${SPARKLE_C_CPP}")
-        message(STATUS "Including sparkle_barrier.cpp + diagnostic wrappers in xlean for WASM FFI")
-    endif()
-    set(_excluded_init_syms "")
-    if(EXISTS "${SPARKLE_IR_DIR}")
-        file(GLOB_RECURSE _SPARKLE_IR_C RELATIVE "${SPARKLE_IR_DIR}"
-             "${SPARKLE_IR_DIR}/*.c")
-        # Exclude every IR file that references sparkle_jit_* — those
-        # symbols live in sparkle_jit.c which has mismatched signatures
-        # vs the IR's view. Stubs for their `initialize_sparkle_*`
-        # entry points are provided below.
-        set(_filtered "")
-        foreach(_rel ${_SPARKLE_IR_C})
-            file(STRINGS "${SPARKLE_IR_DIR}/${_rel}" _jit_refs REGEX "sparkle_jit_")
-            if(_jit_refs)
-                # Derive the module name from path so we can stub init.
-                string(REGEX REPLACE "\\.c$" "" _mod "${_rel}")
-                string(REPLACE "/" "_" _mod "${_mod}")
-                list(APPEND _excluded_init_syms "${_mod}")
-            else()
-                list(APPEND _filtered "${_rel}")
-            endif()
-        endforeach()
-        set(_SPARKLE_IR_C ${_filtered})
-        foreach(_rel ${_SPARKLE_IR_C})
-            string(REPLACE "/" "_" _flat "${_rel}")
-            string(REGEX REPLACE "\\.c$" ".cpp" _flat "${_flat}")
-            set(_dst "${CMAKE_BINARY_DIR}/sparkle_ir_${_flat}")
-            configure_file("${SPARKLE_IR_DIR}/${_rel}" "${_dst}" COPYONLY)
-            list(APPEND SPARKLE_WASM_SOURCES "${_dst}")
-        endforeach()
-        list(LENGTH _SPARKLE_IR_C _n_ir)
-        message(STATUS "Including ${_n_ir} Sparkle IR .cpp files in xlean for WASM FFI")
-    endif()
-    # Stub initialize_sparkle_* for every IR file we excluded above,
-    # so Sparkle.cpp's module-init sequence still links.
-    set(SPARKLE_JIT_STUB "${CMAKE_BINARY_DIR}/sparkle_jit_stubs.cpp")
-    set(_init_stub_decls "")
-    foreach(_mod ${_excluded_init_syms})
-        set(_init_stub_decls "${_init_stub_decls}INIT_STUB(${_mod})\n")
-    endforeach()
-    file(WRITE "${SPARKLE_JIT_STUB}"
-"#include <lean/lean.h>
-extern \"C\" {
-// The Lean 4.28 IR calls module init with a single uint8_t (builtin flag).
-// Older Lean/sparkle_jit.c used (uint8_t, lean_object*); match the IR.
-#define INIT_STUB(mod) LEAN_EXPORT lean_object* initialize_sparkle_##mod(uint8_t builtin) { return lean_io_result_mk_ok(lean_box(0)); }
-${_init_stub_decls}}
-")
-    list(APPEND SPARKLE_WASM_SOURCES "${SPARKLE_JIT_STUB}")
-    list(LENGTH _excluded_init_syms _n_stubs)
-    message(STATUS "Including sparkle_jit_stubs.cpp (${_n_stubs} init stubs)")
-    if(SPARKLE_WASM_SOURCES)
-        add_library(sparkle_wasm STATIC ${SPARKLE_WASM_SOURCES})
-        target_compile_options(sparkle_wasm PRIVATE -fPIC -g2)
-        target_compile_features(sparkle_wasm PRIVATE cxx_std_17)
-        target_include_directories(sparkle_wasm PRIVATE ${LEAN4_INCLUDE_DIR})
-        set_property(TARGET sparkle_wasm PROPERTY POSITION_INDEPENDENT_CODE ON)
-    endif()
     add_executable(xlean src/main_emscripten_kernel.cpp)
     target_link_libraries(xlean PRIVATE xeus-lite)
     target_link_libraries(xlean PRIVATE xeus-lean-static)
-    # Force-link the entire Sparkle archive so wasm-ld does not strip
-    # the dynamically-resolved `lp_sparkle_*` symbols.
-    # --whole-archive alone is not enough: wasm-ld still gc-sections
-    # unreferenced symbols. --export-dynamic + --no-gc-sections keeps
-    # them in the final wasm so the Lean interpreter's dlsym() works.
-    if(TARGET sparkle_wasm)
-        # Extract LEAN_EXPORT symbol names from the generated IR .cpp
-        # files at configure time and pass them to emcc as
-        # EXPORTED_FUNCTIONS. wasm-ld LTO drops symbols nothing
-        # references; the only reliable way to keep interpreter-
-        # resolved symbols in the final wasm is to name them.
-        set(_sparkle_syms "")
-        foreach(_src ${SPARKLE_WASM_SOURCES})
-            # Skip the stubs file so we don't pick up the macro
-            # parameter `name` as a symbol.
-            if(_src MATCHES "sparkle_jit_stubs\\.cpp$")
-                continue()
-            endif()
-            file(STRINGS "${_src}" _hits REGEX "LEAN_EXPORT[^(]*[ *]([a-zA-Z_][a-zA-Z_0-9]*)\\(")
-            foreach(_l ${_hits})
-                if(_l MATCHES "LEAN_EXPORT[^(]*[ *]([a-zA-Z_][a-zA-Z_0-9]*)\\(")
-                    list(APPEND _sparkle_syms "_${CMAKE_MATCH_1}")
-                endif()
-            endforeach()
-        endforeach()
-        # Always include the C FFI entry points used by Sparkle IR.
-        list(APPEND _sparkle_syms "_sparkle_cache_get" "_sparkle_eval_at")
-        list(REMOVE_DUPLICATES _sparkle_syms)
-        list(LENGTH _sparkle_syms _n_syms)
-        message(STATUS "Sparkle exports: ${_n_syms} symbols will be kept")
-        list(JOIN _sparkle_syms "," _sparkle_csv)
-        set(_sparkle_exports_file "${CMAKE_BINARY_DIR}/sparkle_exports.txt")
-        # No _main — this executable uses EMSCRIPTEN_BINDINGS and
-        # emscripten provides its own entry stub. Listing _main here
-        # triggers "undefined exported symbol" since the user code
-        # never defines it.
-        # Also export _xlean_poll_load_progress so the JS-side setTimeout
-        # in the %load magic can call it as Module._xlean_poll_load_progress.
-        # We schedule the poll through JS instead of
-        # emscripten_async_call because the latter's `void* arg`
-        # wrapper crashes under -sMEMORY64=1.
-        file(WRITE "${_sparkle_exports_file}"
-             "[${_sparkle_csv},_xlean_poll_load_progress]")
-        # LINK_FLAGS does NOT evaluate generator expressions, so use
-        # the concrete archive path instead of $<TARGET_FILE:...>.
-        set(_sparkle_archive "${CMAKE_BINARY_DIR}/libsparkle_wasm.a")
-        set_property(TARGET xlean APPEND_STRING PROPERTY LINK_FLAGS
-            " -Wl,--whole-archive ${_sparkle_archive} -Wl,--no-whole-archive -sEXPORTED_FUNCTIONS=@${_sparkle_exports_file}")
-        add_dependencies(xlean sparkle_wasm)
-    endif()
+
+    # Always-on exports: symbols that the JS side calls back into wasm
+    # for housekeeping (poll the %load progress queue, etc.).  Without
+    # them wasm-ld's LTO would garbage-collect the function because the
+    # C++ side never references it.
+    #
+    # Downstream third-party libs add their own exports through the
+    # EXTRA_WASM_DIRS path below.
+    set(_xlean_core_exports "_xlean_poll_load_progress")
+    set(_xlean_core_exports_file "${CMAKE_BINARY_DIR}/xlean_core_exports.txt")
+    file(WRITE "${_xlean_core_exports_file}" "[${_xlean_core_exports}]")
+    set_property(TARGET xlean APPEND_STRING PROPERTY LINK_FLAGS
+        " -sEXPORTED_FUNCTIONS=@${_xlean_core_exports_file}")
     # ========================================================================
-    # Extra static libraries (optional) — wired via -DEXTRA_WASM_DIRS
+    # Third-party static libraries (optional) — wired via -DEXTRA_WASM_DIRS
     # ========================================================================
-    # Generic mechanism for third-party Lean libraries (Hesper, future ones)
-    # to plug their WASM build into xlean without xeus-lean knowing their
-    # name.  Each entry in EXTRA_WASM_DIRS points at a staging directory
-    # produced by the third-party project's own build script and must
-    # contain `xeus-lean-extra.json` describing what to wire in:
+    # Generic plug-in point for downstream Lean libraries to attach
+    # their WASM artefacts (static archive + C extern exports + olean
+    # tree) to the xlean build.  xeus-lean knows none of their names;
+    # everything is data-driven from each staging directory's manifest.
+    #
+    # Manifest schema (`<staging>/xeus-lean-extra.json`):
     #
     #   {
-    #     "archive":   "lib/libhesper_wasm.a",
-    #     "exports":   "lib/hesper_exports.txt",
-    #     "olean_root": "Hesper"        # top-level Lean module name
+    #     "archive":    "lib/libNAME_wasm.a",   // whole-archived into xlean
+    #     "exports":    "lib/NAME_exports.txt", // splatted into EXPORTED_FUNCTIONS
+    #     "olean_root": "TopLevelModule"        // optional, copied to /lib/lean/
     #   }
     #
-    # The archive is whole-archived into xlean (Lean externs are
-    # dynamically resolved so wasm-ld would otherwise DCE them), the
-    # exports file is splatted into emcc's -sEXPORTED_FUNCTIONS, and the
-    # olean tree under <dir>/<olean_root>/ is copied into OLEAN_ASSETS_DIR
-    # alongside Init / Std / Lean / Sparkle (see the LEAN_OLEAN_SRC block
-    # below).  The "module" name only lives inside the manifest — xeus-lean
-    # never hard-codes it.
-    #
-    # Legacy: -DHESPER_WASM_DIR=<dir> is honoured by synthesising an
-    # EXTRA_WASM_DIRS entry on the fly so existing Hesper recipes keep
-    # working without their build script being updated.
-    if(DEFINED HESPER_WASM_DIR AND NOT "${HESPER_WASM_DIR}" STREQUAL "")
-        message(STATUS "HESPER_WASM_DIR is deprecated; use EXTRA_WASM_DIRS=${HESPER_WASM_DIR}")
-        list(APPEND EXTRA_WASM_DIRS "${HESPER_WASM_DIR}")
-        # Hesper's pre-manifest build script doesn't ship the JSON;
-        # synthesise one in the binary dir.
-        set(_legacy_manifest "${CMAKE_BINARY_DIR}/hesper_legacy_extra.json")
-        file(WRITE "${_legacy_manifest}"
-"{\n  \"archive\": \"lib/libhesper_wasm.a\",\n  \"exports\": \"lib/hesper_exports.txt\",\n  \"olean_root\": \"Hesper\"\n}\n")
-        if(NOT EXISTS "${HESPER_WASM_DIR}/xeus-lean-extra.json")
-            file(COPY "${_legacy_manifest}" DESTINATION "${HESPER_WASM_DIR}/"
-                 FILES_MATCHING PATTERN "hesper_legacy_extra.json")
-            file(RENAME "${HESPER_WASM_DIR}/hesper_legacy_extra.json"
-                       "${HESPER_WASM_DIR}/xeus-lean-extra.json")
-        endif()
-    endif()
+    # See README.md (`## Extending the kernel with your own Lean lib`)
+    # and `tests/fixtures/mock-extra/` for a worked example.
 
-    set(_extra_olean_specs "")   # filled in below, consumed by the
-                                 # olean stage near LEAN_OLEAN_SRC.
+    set(_extra_olean_specs "")     # filled in below, consumed by the
+                                   # olean stage near LEAN_OLEAN_SRC.
+    set(_extra_archive_paths "")   # also filled in below; consumed by
+                                   # the symbol-table generator and the
+                                   # test_wasm_node link further down.
     foreach(_extra_dir IN LISTS EXTRA_WASM_DIRS)
         set(_manifest "${_extra_dir}/xeus-lean-extra.json")
         if(NOT EXISTS "${_manifest}")
@@ -396,6 +228,7 @@ ${_init_stub_decls}}
                 "manifest=${_manifest})")
         set_property(TARGET xlean APPEND_STRING PROPERTY LINK_FLAGS
             " -Wl,--whole-archive ${_archive} -Wl,--no-whole-archive -sEXPORTED_FUNCTIONS=@${_exports_emcc}")
+        list(APPEND _extra_archive_paths "${_archive}")
 
         if(_olean_root)
             # Defer the olean copy until the LEAN_OLEAN_SRC block sets up
@@ -470,8 +303,8 @@ ${_init_stub_decls}}
         # as fire-and-forget JS (the cell's stdout shows progress)
         # and returns immediately.  Users wait, then run the next
         # cell once the log says the bundle is ready.
-        # EXPORT_ALL=1 did not retain Sparkle IR symbols; we use
-        # --whole-archive below on sparkle_wasm instead.
+        # EXPORT_ALL=1 did not retain third-party IR symbols; we use
+        # --whole-archive on EXTRA_WASM_DIRS archives instead.
     )
 
     target_link_options(xlean
@@ -517,7 +350,7 @@ ${_init_stub_decls}}
             # blew the WASM binary up to ~480MB, all of which the
             # browser had to decode and keep in Linear Memory for
             # every notebook.  Now we ship Init as a tarball
-            # alongside Std/Lean/Sparkle (see OLEAN_ASSETS_DIR
+            # alongside Std/Lean + EXTRA_WASM_DIRS (see OLEAN_ASSETS_DIR
             # below); post.js fetches and unpacks it in preRun,
             # which blocks WASM main() until /lib/lean/Init/ is
             # populated, so the runtime sees the same VFS layout
@@ -533,7 +366,7 @@ ${_init_stub_decls}}
 
             # Embed Display + CommBus (small + always-imported) via
             # --embed-file (baked into the WASM binary).  Std / Lean /
-            # Init / Sparkle / Hesper are dynamic-load (tarballs).
+            # Init + EXTRA_WASM_DIRS olean trees are dynamic-load (tarballs).
             set(LEAN_OLEAN_STAGING_ROOT "${CMAKE_BINARY_DIR}/olean_staging")
             target_link_options(xlean
                 PUBLIC "SHELL: --embed-file ${LEAN_OLEAN_STAGING_ROOT}@/")
@@ -624,7 +457,7 @@ ${_init_stub_decls}}
             # CommBus is imported by Display, so its olean must be in the
             # VFS too — otherwise `import Display` fails at the header
             # stage with "unknown module prefix 'CommBus'", which then
-            # cascades into Init/Std/Lean/Sparkle being skipped and the
+            # cascades into Init/Std/Lean being skipped and the
             # cell crashing on basic identifiers like `IO.println`.
             set(DISPLAY_OLEAN_SRC "${CMAKE_SOURCE_DIR}/.lake/build/lib/lean")
             foreach(_mod Display CommBus)
@@ -635,35 +468,15 @@ ${_init_stub_decls}}
                     endif()
                 endforeach()
             endforeach()
-            # Copy Sparkle .olean to assets (dynamic load, not embed)
-            set(SPARKLE_OLEAN_SRC "${CMAKE_SOURCE_DIR}/examples/sparkle/.lake/packages/sparkle/.lake/build/lib/lean")
-            if(IS_DIRECTORY "${SPARKLE_OLEAN_SRC}/Sparkle")
-                foreach(_ext olean olean.private)
-                    if(EXISTS "${SPARKLE_OLEAN_SRC}/Sparkle.${_ext}")
-                        file(COPY "${SPARKLE_OLEAN_SRC}/Sparkle.${_ext}" DESTINATION "${OLEAN_ASSETS_DIR}/")
-                    endif()
-                endforeach()
-                file(GLOB_RECURSE _SPARKLE_FILES RELATIVE "${SPARKLE_OLEAN_SRC}"
-                    "${SPARKLE_OLEAN_SRC}/Sparkle/*.olean"
-                    "${SPARKLE_OLEAN_SRC}/Sparkle/*.olean.server"
-                    "${SPARKLE_OLEAN_SRC}/Sparkle/*.olean.private"
-                    "${SPARKLE_OLEAN_SRC}/Sparkle/*.ir"
-                    "${SPARKLE_OLEAN_SRC}/Sparkle/*.ilean")
-                list(LENGTH _SPARKLE_FILES _sparkle_count)
-                foreach(_f ${_SPARKLE_FILES})
-                    get_filename_component(_dir "${_f}" DIRECTORY)
-                    file(MAKE_DIRECTORY "${OLEAN_ASSETS_DIR}/${_dir}")
-                    file(COPY "${SPARKLE_OLEAN_SRC}/${_f}" DESTINATION "${OLEAN_ASSETS_DIR}/${_dir}/")
-                endforeach()
-                message(STATUS "Sparkle: ${_sparkle_count} files → olean_assets (dynamic load)")
-            else()
-                message(STATUS "Sparkle .olean not found")
-            endif()
+            # Third-party Lean libraries are pulled
+            # in via EXTRA_WASM_DIRS — see the _extra_olean_specs loop
+            # below.  xeus-lean itself stages only the Lean toolchain
+            # oleans (Init/Std/Lean) and Display.
 
             # Stage third-party olean trees declared via EXTRA_WASM_DIRS.
             # Each spec is "<dir>|<olean_root>" — copy
             # <dir>/<root>{,/**}.{olean,olean.private,olean.server,ir,ilean}
-            # into ${OLEAN_ASSETS_DIR}.  Same shape as the Sparkle branch
+            # into ${OLEAN_ASSETS_DIR}.  Same shape as the toolchain branch
             # above; the loop has zero hard-coded module names.
             foreach(_spec IN LISTS _extra_olean_specs)
                 string(REPLACE "|" ";" _parts "${_spec}")
@@ -744,9 +557,11 @@ ${_init_stub_decls}}
         ${STAGE0_LEAN_LIB}
         ${STAGE0_REPL_LIB}
     )
-    if(TARGET sparkle_wasm)
-        list(APPEND _symtab_libs sparkle_wasm)
-    endif()
+    # Add every archive contributed via EXTRA_WASM_DIRS so its Lean
+    # externs end up in the dlsym lookup table too.
+    foreach(_extra_archive_path IN LISTS _extra_archive_paths)
+        list(APPEND _symtab_libs "${_extra_archive_path}")
+    endforeach()
     generate_wasm_symbol_table(${WASM_SYMTAB_FILE} ${_symtab_libs})
 
     # Add symbol table to xlean (generated above)
@@ -764,14 +579,14 @@ ${_init_stub_decls}}
         ${STAGE0_INIT_LIB}
         ${LEANRT_LIB}
     )
-    if(TARGET sparkle_wasm)
-        # wasm_symbol_table.cpp references initialize_sparkle_* — needs
-        # the Sparkle archive to resolve those symbols.
+    # wasm_symbol_table.cpp references symbols from each
+    # EXTRA_WASM_DIRS archive — pull them in via whole-archive so
+    # the references resolve at link time.
+    foreach(_extra_archive_path IN LISTS _extra_archive_paths)
         target_link_options(test_wasm_node PRIVATE
-            "SHELL: -Wl,--whole-archive ${CMAKE_BINARY_DIR}/libsparkle_wasm.a -Wl,--no-whole-archive"
+            "SHELL: -Wl,--whole-archive ${_extra_archive_path} -Wl,--no-whole-archive"
         )
-        add_dependencies(test_wasm_node sparkle_wasm)
-    endif()
+    endforeach()
     target_compile_options(test_wasm_node PRIVATE -fPIC -g2)
     target_link_options(test_wasm_node PRIVATE
         "SHELL: -fwasm-exceptions"
@@ -790,7 +605,7 @@ ${_init_stub_decls}}
         "SHELL: -sEXPORT_ALL=1"
         "SHELL: --profiling-funcs"
     )
-    # test_wasm_node only needs Init .olean files (not Std/Lean/Sparkle).
+    # test_wasm_node only needs Init .olean files (not Std/Lean).
     # Create a minimal staging with Init only to keep the binary small.
     if(LEAN_TOOLCHAIN_DIR AND EXISTS "${LEAN_OLEAN_SRC}/Init.olean")
         set(TEST_OLEAN_STAGING "${CMAKE_BINARY_DIR}/test_olean_staging/lib/lean")
