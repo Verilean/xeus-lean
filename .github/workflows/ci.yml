@@ -146,27 +146,37 @@ jobs:
         lake update
         lake build SparkleDemo || echo "WARN: Sparkle build failed; xlean link may fail"
 
-    - name: Build Hesper WGSL (lake, optional)
+    - name: Checkout Hesper (for wasm build)
+      uses: actions/checkout@v4
+      with:
+        repository: Verilean/hesper
+        path: _hesper
+        ref: main
+
+    - name: Build Hesper wasm staging (libhesper_wasm.a + olean)
       run: |
-        # Hesper is a git submodule. Phase 0/1 only builds the WGSL DSL
-        # subset (no FFI, no WebGPU, no GLFW). The build wrapper applies
-        # patches under hesper-wasm/patches/ and a stripped lakefile.
-        if [ -f hesper/Hesper.lean ]; then
-          mkdir -p hesper-wasm/build
-          bash hesper-wasm/build-wasm.sh hesper hesper-wasm/build \
+        # hesper/native/wasm/build-wasm.sh produces both libhesper_wasm.a
+        # and the olean tree in a single staging directory.  We force-pin
+        # Hesper's Lean toolchain to ours so the oleans link cleanly
+        # against this kernel.
+        STAGING="${RUNNER_TEMP}/hesper-wasm"
+        mkdir -p "$STAGING"
+        LEAN_TOOLCHAIN_OVERRIDE="$(pwd)/lean-toolchain" \
+          pixi run -e wasm-build bash _hesper/native/wasm/build-wasm.sh \
+            "$STAGING" \
             Hesper.WGSL.DSL Hesper.WGSL.Helpers Hesper.WGSL.Templates \
             Hesper.WGSL.Shader Hesper.WGSL.Kernel \
-            || echo "WARN: hesper-wasm build failed; Hesper module unavailable"
-          ls -la hesper-wasm/build 2>/dev/null | head -5 || true
-        else
-          echo "Hesper submodule not initialized; skipping"
-        fi
+            || { echo "ERROR: hesper-wasm build failed"; exit 1; }
+        ls -lh "$STAGING/lib/" || true
+        wc -l "$STAGING/lib/hesper_exports.txt" || true
+        echo "HESPER_WASM_DIR=$STAGING" >> "$GITHUB_ENV"
 
     - name: Configure WASM build (emcmake)
       run: |
         pixi run -e wasm-build emcmake cmake -S . -B wasm-build \
           -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ON
+          -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ON \
+          -DHESPER_WASM_DIR="${HESPER_WASM_DIR}"
 
     - name: Build WASM kernel (emmake)
       run: |
@@ -226,11 +236,9 @@ jobs:
           echo "WARNING: olean dir not found at $OLEAN_SRC — skipping"
           exit 0
         fi
-        # Drop a symlink into OLEAN_SRC so the pack script picks up the
-        # Hesper submodule's WGSL oleans alongside Std/Lean/Sparkle.
-        if [ -d hesper-wasm/build/Hesper ]; then
-          ln -sf "$(realpath hesper-wasm/build/Hesper)" "$OLEAN_SRC/Hesper"
-        fi
+        # Hesper olean files are staged into $OLEAN_SRC directly by
+        # CMake (see CMakeLists.txt's HESPER_WASM_DIR block) — no
+        # symlink needed any more.
         mkdir -p _olean_packed
         bash scripts/pack-olean-modules.sh "$OLEAN_SRC" _olean_packed ""
         ls -lh _olean_packed/

@@ -64,8 +64,6 @@ jobs:
             - 'pixi.toml'
             - 'pixi.lock'
             - 'examples/sparkle/**'
-            - 'hesper/**'
-            - 'hesper-wasm/**'
             - 'scripts/**'
             - 'Dockerfile.docs-builder'
             - '.github/workflows/docs.yml'

@@ -312,6 +312,50 @@ ${_init_stub_decls}}
             " -Wl,--whole-archive ${_sparkle_archive} -Wl,--no-whole-archive -sEXPORTED_FUNCTIONS=@${_sparkle_exports_file}")
         add_dependencies(xlean sparkle_wasm)
     endif()
+
+    # ========================================================================
+    # Hesper (optional) — wired via -DHESPER_WASM_DIR=<staging>
+    # ========================================================================
+    # The staging directory is produced by `hesper/native/wasm/build-wasm.sh`
+    # (see https://github.com/Verilean/hesper).  It contains:
+    #   <HESPER_WASM_DIR>/lib/libhesper_wasm.a
+    #   <HESPER_WASM_DIR>/lib/hesper_exports.txt   (one `_lean_hesper_*` per line)
+    #   <HESPER_WASM_DIR>/Hesper{,/**}.{olean,olean.server,olean.private,ir,ilean}
+    #
+    # When unset, this block is a no-op — xlean links without Hesper and the
+    # REPL simply has no `import Hesper.*` available.  When set, we mirror
+    # the sparkle archive pattern: whole-archive the static lib so wasm-ld
+    # cannot DCE the dynamically-resolved Lean externs, plus splat the
+    # exports list into emcc's -sEXPORTED_FUNCTIONS so LTO keeps them in
+    # the final wasm.  The olean tree is installed alongside Sparkle's so
+    # the JS-side manifest loader picks it up as just another bundle.
+    if(HESPER_WASM_DIR)
+        set(_hesper_archive "${HESPER_WASM_DIR}/lib/libhesper_wasm.a")
+        set(_hesper_exports "${HESPER_WASM_DIR}/lib/hesper_exports.txt")
+        if(NOT EXISTS "${_hesper_archive}")
+            message(FATAL_ERROR "HESPER_WASM_DIR=${HESPER_WASM_DIR} is set but ${_hesper_archive} is missing — run hesper/native/wasm/build-wasm.sh first")
+        endif()
+        if(NOT EXISTS "${_hesper_exports}")
+            message(FATAL_ERROR "HESPER_WASM_DIR=${HESPER_WASM_DIR}/lib/hesper_exports.txt missing — rerun build-wasm.sh to regenerate the symbol list")
+        endif()
+        file(STRINGS "${_hesper_exports}" _hesper_syms)
+        list(LENGTH _hesper_syms _n_hesper_syms)
+        message(STATUS "Hesper exports: ${_n_hesper_syms} symbols will be kept (from ${_hesper_exports})")
+        list(JOIN _hesper_syms "," _hesper_csv)
+        set(_hesper_exports_emcc "${CMAKE_BINARY_DIR}/hesper_exports_emcc.txt")
+        file(WRITE "${_hesper_exports_emcc}" "[${_hesper_csv}]")
+        set_property(TARGET xlean APPEND_STRING PROPERTY LINK_FLAGS
+            " -Wl,--whole-archive ${_hesper_archive} -Wl,--no-whole-archive -sEXPORTED_FUNCTIONS=@${_hesper_exports_emcc}")
+
+        # Stage Hesper's olean tree into the standard manifest location
+        # (alongside Init / Std / Lean / Sparkle).  We do this lazily —
+        # only when the host LEAN_OLEAN_SRC block below actually decides
+        # to populate `${OLEAN_ASSETS_DIR}`.  The variable is set up much
+        # further down (see the `if(EXISTS "${LEAN_OLEAN_SRC}/Init.olean")`
+        # branch), so capture the path here and defer the copy.
+        set(_hesper_olean_src "${HESPER_WASM_DIR}")
+    endif()
+
     # Link stage0 libraries (order matters: REPL -> Lean -> Std -> Init -> leanrt)
     target_link_libraries(xlean PRIVATE
         ${STAGE0_REPL_LIB}
@@ -567,6 +611,35 @@ ${_init_stub_decls}}
                 message(STATUS "Sparkle .olean not found")
             endif()
 
+            # Hesper .olean (when HESPER_WASM_DIR is set; see the
+            # libhesper_wasm.a wiring earlier).  Same pattern as
+            # Sparkle — copy `_hesper_olean_src/Hesper{,/**}` into
+            # ${OLEAN_ASSETS_DIR}.  Skipped when HESPER_WASM_DIR is
+            # unset (the variable is set/unset earlier; `_hesper_olean_src`
+            # only gets a value inside the `if(HESPER_WASM_DIR)` block).
+            if(DEFINED _hesper_olean_src AND IS_DIRECTORY "${_hesper_olean_src}/Hesper")
+                foreach(_ext olean olean.private)
+                    if(EXISTS "${_hesper_olean_src}/Hesper.${_ext}")
+                        file(COPY "${_hesper_olean_src}/Hesper.${_ext}" DESTINATION "${OLEAN_ASSETS_DIR}/")
+                    endif()
+                endforeach()
+                file(GLOB_RECURSE _HESPER_FILES RELATIVE "${_hesper_olean_src}"
+                    "${_hesper_olean_src}/Hesper/*.olean"
+                    "${_hesper_olean_src}/Hesper/*.olean.server"
+                    "${_hesper_olean_src}/Hesper/*.olean.private"
+                    "${_hesper_olean_src}/Hesper/*.ir"
+                    "${_hesper_olean_src}/Hesper/*.ilean")
+                list(LENGTH _HESPER_FILES _hesper_count)
+                foreach(_f ${_HESPER_FILES})
+                    get_filename_component(_dir "${_f}" DIRECTORY)
+                    file(MAKE_DIRECTORY "${OLEAN_ASSETS_DIR}/${_dir}")
+                    file(COPY "${_hesper_olean_src}/${_f}" DESTINATION "${OLEAN_ASSETS_DIR}/${_dir}/")
+                endforeach()
+                message(STATUS "Hesper: ${_hesper_count} files → olean_assets (dynamic load)")
+            elseif(HESPER_WASM_DIR)
+                message(WARNING "HESPER_WASM_DIR=${HESPER_WASM_DIR} set but no Hesper olean tree found at ${_hesper_olean_src}/Hesper")
+            endif()
+
             # Generate manifest.json listing all .olean asset files
             file(GLOB_RECURSE _ALL_ASSET_FILES
                 RELATIVE "${CMAKE_BINARY_DIR}/olean_assets/lib/lean"
@@ -618,6 +691,12 @@ ${_init_stub_decls}}
     if(TARGET sparkle_wasm)
         list(APPEND _symtab_libs sparkle_wasm)
     endif()
+    if(HESPER_WASM_DIR)
+        # libhesper_wasm.a is shipped pre-built (not an in-tree target),
+        # so pass the absolute archive path directly — generate_wasm_symbol_table
+        # accepts file paths for entries that don't resolve as CMake targets.
+        list(APPEND _symtab_libs "${HESPER_WASM_DIR}/lib/libhesper_wasm.a")
+    endif()
     generate_wasm_symbol_table(${WASM_SYMTAB_FILE} ${_symtab_libs})
 
     # Add symbol table to xlean (generated above)
@@ -642,6 +721,13 @@ ${_init_stub_decls}}
             "SHELL: -Wl,--whole-archive ${CMAKE_BINARY_DIR}/libsparkle_wasm.a -Wl,--no-whole-archive"
         )
         add_dependencies(test_wasm_node sparkle_wasm)
+    endif()
+    if(HESPER_WASM_DIR)
+        # Same reasoning — the symbol table records `lean_hesper_*` so the
+        # test_wasm_node target needs libhesper_wasm.a on its link line.
+        target_link_options(test_wasm_node PRIVATE
+            "SHELL: -Wl,--whole-archive ${HESPER_WASM_DIR}/lib/libhesper_wasm.a -Wl,--no-whole-archive"
+        )
     endif()
     target_compile_options(test_wasm_node PRIVATE -fPIC -g2)
     target_link_options(test_wasm_node PRIVATE
