@@ -348,6 +348,41 @@ int main() {
         }
     };
 
+    // run_cmd_expect — like run_cmd but asserts that `needle` appears
+    // somewhere in the JSON result (which is what
+    // `lean_wasm_repl_execute` returns).  Used for the
+    // mock-extra-fixture check below where we need a hard contract
+    // failure to fail the WASM build, not just a noisy stderr.
+    auto run_cmd_expect = [&](const char* desc, const char* code_str,
+                              const char* needle,
+                              uint32_t env_id = 0, uint8_t has_env = 0) -> bool {
+        std::cerr << "[TEST] Execute (expect '" << needle << "'): '" << desc << "'" << std::endl;
+        try {
+            lean_object* code = lean_mk_string(code_str);
+            lean_inc(state_ref);
+            lean_object* res = lean_wasm_repl_execute(state_ref, code, env_id, has_env);
+            if (lean_io_result_is_error(res)) {
+                std::cerr << "[TEST] FAILED: lean_wasm_repl_execute" << std::endl;
+                lean_io_result_show_error(res);
+                lean_dec(res);
+                return false;
+            }
+            lean_object* result = lean_io_result_get_value(res);
+            const char* result_str = lean_string_cstr(result);
+            std::cerr << "[TEST] Result: " << (result_str ? result_str : "(null)") << std::endl;
+            bool ok = result_str && std::string(result_str).find(needle) != std::string::npos;
+            if (!ok) {
+                std::cerr << "[TEST] FAILED: expected '" << needle
+                          << "' in result" << std::endl;
+            }
+            lean_dec(res);
+            return ok;
+        } catch (const std::exception& e) {
+            std::cerr << "[TEST] EXCEPTION: " << e.what() << std::endl;
+            return false;
+        }
+    };
+
     // Stress test: WasmRepl auto-chains hasEnv=0 calls on the latest env so
     // processHeader runs only once, working around the WASM 5th-fresh-import
     // bug. Run many calls to verify the env-reuse path is stable.
@@ -400,47 +435,34 @@ int main() {
     run_cmd("#eval unsafeIO (do let r ← IO.mkRef (0 : Nat); r.set 42; return (← r.get))",
             "#eval unsafeIO (do let r ← IO.mkRef (0 : Nat); r.set 42; return (← r.get))");
 
-    // Sparkle tests — auto-imported on first call by Frontend.lean.
-    // No `import Sparkle` line here because env-reuse means imports only
-    // fire on the first call.
-    std::cerr << "\n[TEST] === Sparkle Simulation Tests ===" << std::endl;
+    // === EXTRA_WASM_DIRS contract test: the mock-extra fixture ===
+    //
+    // When the WASM build was configured with
+    //   -DEXTRA_WASM_DIRS=tests/fixtures/mock-extra/staging
+    // (CI does this), CMake whole-archives libmock_extra_wasm.a into
+    // xlean, stages MockExtra.olean into the VFS, and registers
+    // MockExtra in the kernel's .xeus-auto-imports.  This step
+    // exercises the whole chain: import resolution, dlsym lookup of
+    // the C extern, the Lean call into C, and the C->Lean string
+    // return value.
+    //
+    // We assert the literal "hello from mock-extra" appears in the
+    // result.  Anything else means the contract is broken — fail
+    // hard so CI catches it.
+    std::cerr << "\n[TEST] === EXTRA_WASM_DIRS contract (mock-extra fixture) ===" << std::endl;
 
-    std::cerr << "[TEST] Step 11a: simple eval (Sparkle is auto-imported)" << std::endl;
-    run_cmd("Sparkle eval",
-            "#eval IO.println \"sparkle: ok\"");
+    bool mock_extra_ok = run_cmd_expect(
+        "MockExtra.mockHello ()",
+        "#eval IO.println (MockExtra.mockHello ())",
+        "hello from mock-extra");
 
-    std::cerr << "[TEST] Step 11b: Signal.const + sample" << std::endl;
-    run_cmd("Signal.const sample",
-            "open Sparkle.Core.Domain Sparkle.Core.Signal\n"
-            "def s : Signal defaultDomain (BitVec 4) := \xe2\x9f\xa8" "fun _ => 7#4" "\xe2\x9f\xa9\n"
-            "#eval IO.println s!\"sparkle: {s.sample 1}\"");
-
-    std::cerr << "[TEST] Step 11c: Signal.register (no feedback)" << std::endl;
-    run_cmd("Signal.register",
-            "open Sparkle.Core.Domain Sparkle.Core.Signal\n"
-            "def r := Signal.register 5#4 " "\xe2\x9f\xa8" "fun _ => 9#4" "\xe2\x9f\xa9\n"
-            "#eval IO.println s!\"sparkle: {r.sample 2}\"");
-
-    std::cerr << "[TEST] Step 11d: Signal.loop (feedback - THE hang test)" << std::endl;
-    run_cmd("Signal.loop",
-            "open Sparkle.Core.Domain Sparkle.Core.Signal\n"
-            "def counter := Signal.loop (fun s => Signal.register 0#4 (s.map (\xc2\xb7 + 1#4)))\n"
-            "#eval IO.println s!\"sparkle: {counter.val 0}\"");
-
-    // Hesper WGSL DSL tests — Hesper.WGSL.DSL is auto-imported by Frontend
-    // when /lib/lean/Hesper/WGSL/DSL.olean exists in the VFS.
-    // Phase 1 of the Hesper integration: pure-Lean WGSL DSL, no FFI.
-    std::cerr << "\n[TEST] === Hesper WGSL DSL Tests ===" << std::endl;
-
-    std::cerr << "[TEST] Step 12a: Hesper namespace available" << std::endl;
-    run_cmd("Hesper namespace",
-            "#eval IO.println \"hesper: ok\"");
-
-    std::cerr << "[TEST] Step 12b: build a small Exp and toWGSL it" << std::endl;
-    run_cmd("Hesper.WGSL Exp",
-            "open Hesper.WGSL\n"
-            "def e : Exp (.scalar .f32) := Exp.var \"x\"\n"
-            "#eval IO.println s!\"hesper: {e.toWGSL}\"");
+    if (!mock_extra_ok) {
+        std::cerr << "[TEST] FAILED: mock-extra fixture didn't return the "
+                     "expected string.  EXTRA_WASM_DIRS contract is broken; "
+                     "downstream Lean libs cannot rely on it." << std::endl;
+        lean_dec(state_ref);
+        return 1;
+    }
 
     std::cerr << "[TEST] All steps completed successfully!" << std::endl;
     lean_dec(state_ref);
