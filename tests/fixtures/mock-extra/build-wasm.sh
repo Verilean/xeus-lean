@@ -68,7 +68,18 @@ for ext in olean.private olean.server ir ilean; do
 done
 
 # ---------------------------------------------------------------------
-# 2. Build the C extern as a WASM static library.
+# 2. Build the C extern + the Lean-generated wrappers as a WASM
+#    static library.
+#
+# Lake generates a `.c` file under `.lake/build/ir/MockExtra.c` that
+# wraps every `@[extern]` declaration in a boxed entry point
+# (`lp_<package>_<module>_<name>` / `___boxed`).  The Lean interpreter
+# calls those wrappers via dlsym, so they MUST be in the archive
+# alongside our hand-written C implementation.  Skipping them is the
+# silent failure that shows up at runtime as
+#   "Could not find native implementation of external declaration
+#    'MockExtra.mockHello' (symbols 'lp_mockExtra_MockExtra_mockHello___boxed'
+#    or 'lp_mockExtra_MockExtra_mockHello')"
 # ---------------------------------------------------------------------
 LEAN_PREFIX="$(lean --print-prefix)"
 LEAN_INCLUDE="$LEAN_PREFIX/include"
@@ -77,21 +88,51 @@ if [ ! -d "$LEAN_INCLUDE" ]; then
     exit 1
 fi
 
-OBJ="$STAGING/lib/mock_extra_hello.o"
+GENERATED_C="$SCRIPT_DIR/.lake/build/ir/MockExtra.c"
+if [ ! -f "$GENERATED_C" ]; then
+    echo "[mock-extra] ERROR: lake didn't produce $GENERATED_C" >&2
+    exit 1
+fi
+
+OBJ_HAND="$STAGING/lib/mock_extra_hello.o"
 emcc -O2 -sMEMORY64 -fPIC \
      -I"$LEAN_INCLUDE" \
      -c "$SCRIPT_DIR/c_src/mock_extra_hello.c" \
-     -o "$OBJ"
-emar rcs "$STAGING/lib/libmock_extra_wasm.a" "$OBJ"
-rm -f "$OBJ"
+     -o "$OBJ_HAND"
+
+# The Lean-generated C uses C++-style declarations (`auto`, etc.) in
+# some toolchains; treat it as C source but with `-Wno-everything` to
+# avoid warnings turning into errors.
+OBJ_LEAN="$STAGING/lib/mock_extra_lean_wrappers.o"
+emcc -O2 -sMEMORY64 -fPIC -w \
+     -I"$LEAN_INCLUDE" \
+     -c "$GENERATED_C" \
+     -o "$OBJ_LEAN"
+
+emar rcs "$STAGING/lib/libmock_extra_wasm.a" "$OBJ_HAND" "$OBJ_LEAN"
+rm -f "$OBJ_HAND" "$OBJ_LEAN"
 
 # ---------------------------------------------------------------------
 # 3. Exports file — one symbol per line, with the leading underscore
 #    emscripten expects on `-sEXPORTED_FUNCTIONS`.
+#
+# Includes:
+#   - mock_extra_hello: the hand-written C extern.
+#   - every LEAN_EXPORT in the generated .c: the boxed wrappers the
+#     Lean interpreter resolves via dlsym at runtime.
 # ---------------------------------------------------------------------
-cat > "$STAGING/lib/mock_extra_exports.txt" <<'EOF'
-_mock_extra_hello
-EOF
+EXPORTS="$STAGING/lib/mock_extra_exports.txt"
+{
+    echo "_mock_extra_hello"
+    # Pick up `LEAN_EXPORT <type> <name>(` lines from the generated C.
+    # Match both bare names and the `___boxed` form Lean uses.
+    grep -oE 'LEAN_EXPORT[[:space:]]+[a-zA-Z_][a-zA-Z_0-9*]*[[:space:]]+[a-zA-Z_][a-zA-Z_0-9]*[[:space:]]*\(' \
+         "$GENERATED_C" \
+      | sed -E 's/^LEAN_EXPORT[[:space:]]+[a-zA-Z_][a-zA-Z_0-9*]*[[:space:]]+([a-zA-Z_][a-zA-Z_0-9]*).*/_\1/'
+} | sort -u > "$EXPORTS"
+
+EXPORT_COUNT=$(wc -l < "$EXPORTS")
+echo "[mock-extra] $EXPORT_COUNT symbol(s) → $EXPORTS"
 
 # ---------------------------------------------------------------------
 # 4. xeus-lean-extra.json — the contract xlean's CMake reads.
