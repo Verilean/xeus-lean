@@ -482,10 +482,23 @@ if(EMSCRIPTEN)
                 string(REPLACE "|" ";" _parts "${_spec}")
                 list(GET _parts 0 _src_dir)
                 list(GET _parts 1 _root)
-                if(NOT IS_DIRECTORY "${_src_dir}/${_root}")
+                # A lib may ship as a single umbrella olean
+                # (`<src_dir>/<root>.olean` only, no sub-tree) or as
+                # an umbrella + tree.  Accept either; only warn if
+                # both the umbrella and the tree are missing.
+                set(_has_umbrella FALSE)
+                if(EXISTS "${_src_dir}/${_root}.olean")
+                    set(_has_umbrella TRUE)
+                endif()
+                set(_has_tree FALSE)
+                if(IS_DIRECTORY "${_src_dir}/${_root}")
+                    set(_has_tree TRUE)
+                endif()
+                if(NOT _has_umbrella AND NOT _has_tree)
                     message(WARNING
                         "EXTRA_WASM_DIRS: ${_src_dir} declared olean_root="
-                        "${_root} but ${_src_dir}/${_root}/ is missing — skipping")
+                        "${_root} but neither ${_src_dir}/${_root}.olean "
+                        "nor ${_src_dir}/${_root}/ exists — skipping")
                     continue()
                 endif()
                 foreach(_ext olean olean.private)
@@ -494,19 +507,36 @@ if(EMSCRIPTEN)
                              DESTINATION "${OLEAN_ASSETS_DIR}/")
                     endif()
                 endforeach()
-                file(GLOB_RECURSE _EXTRA_FILES RELATIVE "${_src_dir}"
-                    "${_src_dir}/${_root}/*.olean"
-                    "${_src_dir}/${_root}/*.olean.server"
-                    "${_src_dir}/${_root}/*.olean.private"
-                    "${_src_dir}/${_root}/*.ir"
-                    "${_src_dir}/${_root}/*.ilean")
-                list(LENGTH _EXTRA_FILES _extra_count)
-                foreach(_f ${_EXTRA_FILES})
-                    get_filename_component(_dir "${_f}" DIRECTORY)
-                    file(MAKE_DIRECTORY "${OLEAN_ASSETS_DIR}/${_dir}")
-                    file(COPY "${_src_dir}/${_f}" DESTINATION "${OLEAN_ASSETS_DIR}/${_dir}/")
-                endforeach()
-                message(STATUS "EXTRA_WASM_DIRS: ${_root}: ${_extra_count} files → olean_assets")
+                set(_extra_count 0)
+                if(_has_tree)
+                    file(GLOB_RECURSE _EXTRA_FILES RELATIVE "${_src_dir}"
+                        "${_src_dir}/${_root}/*.olean"
+                        "${_src_dir}/${_root}/*.olean.server"
+                        "${_src_dir}/${_root}/*.olean.private"
+                        "${_src_dir}/${_root}/*.ir"
+                        "${_src_dir}/${_root}/*.ilean")
+                    list(LENGTH _EXTRA_FILES _extra_count)
+                    foreach(_f ${_EXTRA_FILES})
+                        get_filename_component(_dir "${_f}" DIRECTORY)
+                        file(MAKE_DIRECTORY "${OLEAN_ASSETS_DIR}/${_dir}")
+                        file(COPY "${_src_dir}/${_f}" DESTINATION "${OLEAN_ASSETS_DIR}/${_dir}/")
+                    endforeach()
+                endif()
+                # Stage the .xeus-auto-imports registry if the
+                # third-party staging dir shipped one.  Lives at the
+                # OLEAN_ASSETS_DIR root so xlean's REPL scanner picks
+                # it up alongside the toolchain auto-imports.
+                # Multiple EXTRA_WASM_DIRS entries can each ship one;
+                # we append each to a single file rather than
+                # overwriting.
+                if(EXISTS "${_src_dir}/.xeus-auto-imports")
+                    file(READ "${_src_dir}/.xeus-auto-imports" _ai_body)
+                    file(APPEND "${OLEAN_ASSETS_DIR}/.xeus-auto-imports"
+                                "# from EXTRA_WASM_DIRS=${_src_dir}\n${_ai_body}\n")
+                    message(STATUS "EXTRA_WASM_DIRS: ${_root}: merged .xeus-auto-imports")
+                endif()
+                message(STATUS "EXTRA_WASM_DIRS: ${_root}: ${_extra_count} files → olean_assets"
+                              " (umbrella=${_has_umbrella} tree=${_has_tree})")
             endforeach()
 
             # Generate manifest.json listing all .olean asset files
@@ -605,8 +635,10 @@ if(EMSCRIPTEN)
         "SHELL: -sEXPORT_ALL=1"
         "SHELL: --profiling-funcs"
     )
-    # test_wasm_node only needs Init .olean files (not Std/Lean).
-    # Create a minimal staging with Init only to keep the binary small.
+    # test_wasm_node only needs Init .olean files (not Std/Lean) plus
+    # whatever EXTRA_WASM_DIRS contributed so the mock-extra fixture
+    # (and any future plug-in test) can resolve `import MockExtra`
+    # against its embedded VFS.
     if(LEAN_TOOLCHAIN_DIR AND EXISTS "${LEAN_OLEAN_SRC}/Init.olean")
         set(TEST_OLEAN_STAGING "${CMAKE_BINARY_DIR}/test_olean_staging/lib/lean")
         file(MAKE_DIRECTORY "${TEST_OLEAN_STAGING}")
@@ -620,6 +652,30 @@ if(EMSCRIPTEN)
         if(_cp_rc)
             message(WARNING "Init staging copy failed: rc=${_cp_rc}")
         endif()
+        # Stage every EXTRA_WASM_DIRS olean root + its
+        # .xeus-auto-imports into the same test VFS, mirroring what
+        # xlean does for the deploy target.
+        foreach(_spec IN LISTS _extra_olean_specs)
+            string(REPLACE "|" ";" _parts "${_spec}")
+            list(GET _parts 0 _src_dir)
+            list(GET _parts 1 _root)
+            foreach(_ext olean olean.server olean.private ir ilean)
+                if(EXISTS "${_src_dir}/${_root}.${_ext}")
+                    file(COPY "${_src_dir}/${_root}.${_ext}"
+                         DESTINATION "${TEST_OLEAN_STAGING}/")
+                endif()
+            endforeach()
+            if(IS_DIRECTORY "${_src_dir}/${_root}")
+                file(COPY "${_src_dir}/${_root}"
+                     DESTINATION "${TEST_OLEAN_STAGING}/")
+            endif()
+            if(EXISTS "${_src_dir}/.xeus-auto-imports")
+                file(READ "${_src_dir}/.xeus-auto-imports" _ai_body)
+                file(APPEND "${TEST_OLEAN_STAGING}/.xeus-auto-imports"
+                            "# from EXTRA_WASM_DIRS=${_src_dir}\n${_ai_body}\n")
+            endif()
+            message(STATUS "test_wasm_node: staged ${_root} from ${_src_dir}")
+        endforeach()
         target_link_options(test_wasm_node
             PUBLIC "SHELL: --embed-file ${CMAKE_BINARY_DIR}/test_olean_staging@/")
     endif()
