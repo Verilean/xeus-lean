@@ -8,6 +8,7 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <stdexcept>
+#include <sys/stat.h>
 #include <lean/lean.h>
 
 #ifdef __EMSCRIPTEN__
@@ -439,29 +440,39 @@ int main() {
     //
     // When the WASM build was configured with
     //   -DEXTRA_WASM_DIRS=tests/fixtures/mock-extra/staging
-    // (CI does this), CMake whole-archives libmock_extra_wasm.a into
-    // xlean, stages MockExtra.olean into the VFS, and registers
-    // MockExtra in the kernel's .xeus-auto-imports.  This step
-    // exercises the whole chain: import resolution, dlsym lookup of
-    // the C extern, the Lean call into C, and the C->Lean string
-    // return value.
+    // (CI's wasm-build job does this), CMake whole-archives
+    // libmock_extra_wasm.a into xlean, stages MockExtra.olean into the
+    // VFS, and registers MockExtra in the kernel's .xeus-auto-imports.
+    // This step exercises the whole chain: import resolution, dlsym
+    // lookup of the C extern, the Lean call into C, and the C->Lean
+    // string return value.
     //
-    // We assert the literal "hello from mock-extra" appears in the
-    // result.  Anything else means the contract is broken — fail
-    // hard so CI catches it.
+    // The Dockerfile.docs-builder smoke-test path does NOT pass
+    // EXTRA_WASM_DIRS, so MockExtra.olean is absent from this binary's
+    // embedded VFS.  Detect that and skip the assertion — the contract
+    // is exercised by the wasm-build CI job, not by smoke-testing the
+    // docs-builder image.
     std::cerr << "\n[TEST] === EXTRA_WASM_DIRS contract (mock-extra fixture) ===" << std::endl;
 
-    bool mock_extra_ok = run_cmd_expect(
-        "MockExtra.mockHello ()",
-        "#eval IO.println (MockExtra.mockHello ())",
-        "hello from mock-extra");
+    struct stat st;
+    if (stat("/lib/lean/MockExtra.olean", &st) != 0) {
+        std::cerr << "[TEST] SKIP: /lib/lean/MockExtra.olean not in VFS — "
+                     "this binary was built without EXTRA_WASM_DIRS pointing "
+                     "at tests/fixtures/mock-extra.  The contract is covered "
+                     "by the wasm-build CI job instead." << std::endl;
+    } else {
+        bool mock_extra_ok = run_cmd_expect(
+            "MockExtra.mockHello ()",
+            "#eval IO.println (MockExtra.mockHello ())",
+            "hello from mock-extra");
 
-    if (!mock_extra_ok) {
-        std::cerr << "[TEST] FAILED: mock-extra fixture didn't return the "
-                     "expected string.  EXTRA_WASM_DIRS contract is broken; "
-                     "downstream Lean libs cannot rely on it." << std::endl;
-        lean_dec(state_ref);
-        return 1;
+        if (!mock_extra_ok) {
+            std::cerr << "[TEST] FAILED: mock-extra fixture didn't return the "
+                         "expected string.  EXTRA_WASM_DIRS contract is broken; "
+                         "downstream Lean libs cannot rely on it." << std::endl;
+            lean_dec(state_ref);
+            return 1;
+        }
     }
 
     std::cerr << "[TEST] All steps completed successfully!" << std::endl;
