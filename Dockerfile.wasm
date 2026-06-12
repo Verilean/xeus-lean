@@ -47,9 +47,6 @@ COPY include/      ./include/
 COPY share/        ./share/
 COPY scripts/      ./scripts/
 COPY src/          ./src/
-COPY examples/     ./examples/
-COPY hesper/       ./hesper/
-COPY hesper-wasm/  ./hesper-wasm/
 COPY notebooks/    ./notebooks/
 COPY test_wasm_node.cpp ./
 
@@ -58,22 +55,11 @@ COPY test_wasm_node.cpp ./
 # it must be built before WasmRepl because WasmRepl.lean imports it.
 RUN lake build REPL Display WasmRepl
 
-# Build Sparkle example to generate .olean files that will be
-# embedded in the WASM VFS (CMakeLists.txt looks for them at
-# examples/sparkle/.lake/packages/sparkle/.lake/build/lib/lean/).
-RUN cd examples/sparkle && lake update && lake build SparkleDemo || \
-    echo "WARNING: Sparkle build failed, continuing without Sparkle support"
-
-# Build Hesper WGSL DSL (Phase 1 — pure Lean, no FFI). The build wrapper
-# under hesper-wasm/ applies WASM-specific patches and a stripped lakefile
-# so the upstream submodule stays unmodified.
-RUN if [ -f hesper/Hesper.lean ]; then \
-      mkdir -p hesper-wasm/build && \
-      bash hesper-wasm/build-wasm.sh hesper hesper-wasm/build \
-        Hesper.WGSL.DSL Hesper.WGSL.Helpers Hesper.WGSL.Templates \
-        Hesper.WGSL.Shader Hesper.WGSL.Kernel \
-        || echo "WARNING: hesper-wasm build failed, continuing without Hesper"; \
-    else echo "Hesper submodule absent, skipping"; fi
+# Third-party Lean libraries (Sparkle, Hesper, …) are not built here.
+# Downstream consumers either run their own build script then pass
+# -DEXTRA_WASM_DIRS=<staging> to emcmake, or they `docker build`
+# from a different Dockerfile FROM this image.  See README.md
+# "Extending the kernel with your own Lean lib" for the contract.
 
 # Build WASM kernel
 # 1. Fix emscripten symlinks
@@ -125,7 +111,8 @@ RUN mkdir -p notebooks && \
     find _output -name "xlean*" -ls && \
     cat _output/xeus/kernels.json
 
-# 7. Pack olean assets (Std/Lean/Sparkle) into per-module zstd tarballs.
+# 7. Pack default olean assets (Std/Lean and any EXTRA_WASM_DIRS
+# olean roots that CMake already staged) into per-module zstd tarballs.
 # Phase 2: replaces ~1.5GB of raw .olean files with ~275MB of compressed
 # tarballs. The runtime (src/post.js) fetches and extracts them.
 RUN apt-get update && apt-get install -y zstd && rm -rf /var/lib/apt/lists/*
@@ -133,9 +120,6 @@ RUN PREFIX=$(pixi info -e wasm-host --json 2>/dev/null \
       | python3 -c "import sys,json; print(json.load(sys.stdin)['environments_info'][0]['prefix'])" \
       2>/dev/null || echo ".pixi/envs/wasm-host") && \
     if [ -d "$PREFIX/share/jupyter/olean" ]; then \
-      if [ -d hesper-wasm/build/Hesper ]; then \
-        ln -sf "$(realpath hesper-wasm/build/Hesper)" "$PREFIX/share/jupyter/olean/Hesper"; \
-      fi && \
       mkdir -p _output/xeus/wasm-host/olean && \
       bash scripts/pack-olean-modules.sh "$PREFIX/share/jupyter/olean" _output/xeus/wasm-host/olean "" && \
       echo "Packed default olean tarballs:" && \

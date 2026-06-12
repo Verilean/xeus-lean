@@ -407,7 +407,7 @@ page wants to include the script; without the script the block is
 still readable, just monochrome).
 
 The Markdown→HTML renderer is intentionally minimal: just enough
-to render the Sparkle tutorial chapters cleanly. It covers:
+to render the tutorial chapters cleanly. It covers:
 
   * ATX headings `#`, `##`, …
   * fenced code blocks (already split out as separate cells, so
@@ -421,7 +421,7 @@ to render the Sparkle tutorial chapters cleanly. It covers:
 
 Anything more exotic (footnotes, definition lists, …) falls
 through as a literal paragraph. The chapters under
-`Verilean/sparkle/docs/tutorial/md/` do not use those features.
+`docs/tutorial/md/` (and downstream tutorial trees) do not use those features.
 -/
 
 /-- HTML-escape a string for embedding in text content. -/

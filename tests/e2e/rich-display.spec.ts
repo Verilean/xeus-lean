@@ -63,8 +63,13 @@ test.describe.serial('rich display', () => {
       String.raw`#latex "\\int_0^1 x^2 \\, dx = \\frac{1}{3}"`
     );
     await assertNoError(output);
+    // Both the outer `.jp-RenderedLatex` widget and the
+    // MathJax-typed `mjx-container` inside it satisfy the
+    // selector, so `.first()` it explicitly — toBeVisible with
+    // a non-strict locator would still pass, but the test reads
+    // more honestly as "at least one of these renders".
     await expect(
-      output.locator('mjx-container, .MathJax, .jp-RenderedLatex')
+      output.locator('mjx-container, .MathJax, .jp-RenderedLatex').first()
     ).toBeVisible();
   });
 
@@ -76,7 +81,7 @@ test.describe.serial('rich display', () => {
     await assertNoError(output);
     // SVG may be rendered inline or wrapped in an <img> tag depending
     // on JupyterLab's MIME renderer. Accept either form.
-    await expect(output.locator('svg, img')).toBeVisible();
+    await expect(output.locator('svg, img').first()).toBeVisible();
   });
 
   test('#eval do loop with Display.latex', async () => {
@@ -125,80 +130,13 @@ test.describe.serial('rich display', () => {
       '#eval Display.waveform "clk" [0,1,0,1,0,1,0,1] (bitWidth := 1) (cellW := 30) (height := 60)'
     );
     // Should produce an SVG with a path element (the waveform line)
-    await expect(output.locator('svg, img')).toBeVisible();
+    await expect(output.locator('svg, img').first()).toBeVisible();
   });
 });
 
-/**
- * Sparkle HDL tests. These run in a separate kernel session because
- * `import Sparkle` must be in the first cell (REPL only processes
- * imports in the initial header). Loading 26 Sparkle modules takes
- * extra time.
- */
-test.describe.serial('sparkle hdl', () => {
-  let sparklePage: Page;
-
-  test.beforeAll(async ({ browser }) => {
-    test.setTimeout(600_000);
-    sparklePage = await browser.newPage();
-    // Open sparkle-demo.ipynb which has `import Sparkle` in the first cell
-    await openLeanNotebook(sparklePage, 'sparkle-demo.ipynb');
-  });
-
-  test.afterAll(async () => {
-    await sparklePage?.close();
-  });
-
-  test('Sparkle counter simulation + waveform', async () => {
-    // Capture WASM stderr logs for debugging
-    const logs: string[] = [];
-    sparklePage.on('console', (msg) => {
-      const text = msg.text();
-      if (text.includes('processInput') || text.includes('headerMsg') ||
-          text.includes('Sparkle') || text.includes('error') ||
-          text.includes('import') || text.includes('WasmRepl') ||
-          text.includes('searchPath') || text.includes('not found')) {
-        logs.push(`[${msg.type()}] ${text}`);
-      }
-    });
-
-    // Also capture ALL console messages to a separate list for post-mortem.
-    const allLogs: string[] = [];
-    sparklePage.on('console', (msg) => {
-      allLogs.push(`[${msg.type()}] ${msg.text()}`);
-    });
-
-    const cells = sparklePage.locator('.jp-Notebook .jp-CodeCell');
-    const cell = cells.first();
-    const editor = cell.locator('.cm-content').first();
-    await editor.click();
-    await sparklePage.keyboard.press('Shift+Enter');
-
-    // Wait for output. Sparkle import takes minutes on first run because
-    // 7000+ .olean files are fetched lazily from the JupyterLite server.
-    test.setTimeout(600_000);
-    const output = cell.locator('.jp-OutputArea-output').first();
-    try {
-      await output.waitFor({ state: 'visible', timeout: 540_000 });
-    } catch (e) {
-      // Dump ALL WASM logs on timeout so we can see where it hung.
-      console.log('=== TIMEOUT — dumping ALL console logs ===');
-      for (const log of allLogs.slice(-200)) {
-        console.log(log);
-      }
-      throw e;
-    }
-
-    // Dump WASM REPL logs
-    console.log('=== WASM REPL debug logs ===');
-    for (const log of logs) {
-      console.log(log);
-    }
-
-    // Dump output text
-    const text = await output.textContent();
-    console.log(`=== Output (first 500 chars) ===\n${text?.substring(0, 500)}`);
-
-    await expect(output).toContainText('counter:');
-  });
-});
+// Third-party-Lean-lib HDL/display tests (formerly `sparkle hdl`)
+// have been removed: xeus-lean no longer bundles a specific HDL
+// library, and the EXTRA_WASM_DIRS contract is exercised by
+// `tests/fixtures/mock-extra/` + the native `test_wasm_node`
+// step, not via Playwright.  Downstream repos that ship their
+// own Lean lib own their own Playwright suites.

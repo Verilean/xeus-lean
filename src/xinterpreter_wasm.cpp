@@ -400,6 +400,70 @@ EM_JS(int, xlean_load_fail_msg_to, (char* buf, int max_bytes), {
     stringToUTF8(s, Number(buf), max_bytes);
     return n;
 });
+
+// Drain Module._xleanStdoutBuf (populated by the Module.print hook
+// in pre.js) into a caller-allocated buffer.  Returns the number of
+// UTF-8 bytes written, or -1 if the JS buffer doesn't fit; caller
+// must drain in a loop until 0 is returned.  Resets the JS buffer
+// in the same step so a partial-drain followed by a fresh write
+// doesn't lose new bytes.
+//
+// See https://github.com/Verilean/xeus-lean/issues/11 for context.
+EM_JS(int, xlean_drain_stdout_to, (char* buf, int max_bytes), {
+    var s = Module._xleanStdoutBuf || '';
+    if (!s) return 0;
+    var n = lengthBytesUTF8(s);
+    if (n + 1 > max_bytes) {
+        // Move just the head into the buffer and stash the rest;
+        // the next drain() call will pick the rest up.  Splitting
+        // bytewise is unsafe — we'd cut a multi-byte UTF-8 sequence
+        // — so split on the last newline that fits.  IO.println
+        // emits one whole line per call, so an internal newline is
+        // always present unless someone wrote raw bytes.
+        var fitChars = max_bytes - 1;
+        var head = s.substring(0, fitChars);
+        var cut = head.lastIndexOf('\n');
+        if (cut < 0) {
+            // Single line bigger than max_bytes; truncate at fitChars
+            // (this may corrupt a UTF-8 codepoint, accept the loss).
+            head = s.substring(0, fitChars);
+            Module._xleanStdoutBuf = s.substring(fitChars);
+        } else {
+            head = s.substring(0, cut + 1);
+            Module._xleanStdoutBuf = s.substring(cut + 1);
+        }
+        var hn = lengthBytesUTF8(head);
+        stringToUTF8(head, Number(buf), max_bytes);
+        return hn;
+    }
+    Module._xleanStdoutBuf = '';
+    stringToUTF8(s, Number(buf), max_bytes);
+    return n;
+});
+
+EM_JS(int, xlean_drain_stderr_to, (char* buf, int max_bytes), {
+    var s = Module._xleanStderrBuf || '';
+    if (!s) return 0;
+    var n = lengthBytesUTF8(s);
+    if (n + 1 > max_bytes) {
+        var fitChars = max_bytes - 1;
+        var head = s.substring(0, fitChars);
+        var cut = head.lastIndexOf('\n');
+        if (cut < 0) {
+            head = s.substring(0, fitChars);
+            Module._xleanStderrBuf = s.substring(fitChars);
+        } else {
+            head = s.substring(0, cut + 1);
+            Module._xleanStderrBuf = s.substring(cut + 1);
+        }
+        var hn = lengthBytesUTF8(head);
+        stringToUTF8(head, Number(buf), max_bytes);
+        return hn;
+    }
+    Module._xleanStderrBuf = '';
+    stringToUTF8(s, Number(buf), max_bytes);
+    return n;
+});
 #endif
 
 #ifdef __EMSCRIPTEN__
@@ -732,6 +796,57 @@ void interpreter::execute_request_impl(send_reply_callback cb,
                 pub_data["text/plain"] = rendered;
             }
         }
+
+#ifdef __EMSCRIPTEN__
+        // Drain any IO.println / fprintf(stderr) that ran during elab.
+        // pre.js redirects Module.print(/Err) into JS-side buffers; we
+        // pull them here so the same `extract_mime_payloads` path
+        // handles Sparkle's `#showVerilog → IO.println MIME` etc.
+        // Mirrors xeus_ffi.cpp's dup2 capture on the native kernel.
+        {
+            std::string stdout_captured;
+            static char drain_buf[64 * 1024];
+            for (int safety = 0; safety < 64; ++safety) {
+                int n = xlean_drain_stdout_to(drain_buf, sizeof(drain_buf));
+                if (n <= 0) break;
+                stdout_captured.append(drain_buf, drain_buf + n);
+            }
+            if (!stdout_captured.empty()) {
+                std::string plain;
+                extract_mime_payloads(stdout_captured, mime_bundle, plain);
+                if (!plain.empty()) {
+                    // Prepend stdout's plain text to the rendered
+                    // messages so the order matches what a native
+                    // `lean --run` user would see on a tail of stdout.
+                    std::string prefix = plain;
+                    // IO.println always tacks on a trailing newline,
+                    // but text/plain rendering doesn't need it.
+                    while (!prefix.empty() && prefix.back() == '\n') {
+                        prefix.pop_back();
+                    }
+                    if (!prefix.empty()) {
+                        if (pub_data.contains("text/plain")) {
+                            std::string old = pub_data["text/plain"]
+                                .get<std::string>();
+                            pub_data["text/plain"] = prefix + "\n" + old;
+                        } else {
+                            pub_data["text/plain"] = prefix;
+                        }
+                    }
+                }
+            }
+
+            std::string stderr_captured;
+            for (int safety = 0; safety < 64; ++safety) {
+                int n = xlean_drain_stderr_to(drain_buf, sizeof(drain_buf));
+                if (n <= 0) break;
+                stderr_captured.append(drain_buf, drain_buf + n);
+            }
+            if (!stderr_captured.empty()) {
+                publish_stream("stderr", stderr_captured);
+            }
+        }
+#endif
 
         // Publish rich-display payloads first so they appear above the
         // plain-text result in the notebook (matches IPython ordering).

@@ -76,7 +76,14 @@ def execute (stateRef : IO.Ref REPL.State) (code : String) (envId : UInt32) (has
   -- because Lean 4.28's #eval stdout capture (withIsolatedStreams)
   -- does not work in WASM.
   let displayOutput ← Display.drain
-  IO.eprintln s!"[WasmRepl] displayOutput='{displayOutput.take 200}' len={displayOutput.length}"
+  -- NB: do NOT inline `displayOutput` into the diagnostic — it can
+  -- contain MIME envelopes (raw 0x1B / 0x1E), and the WASM
+  -- `Module.printErr` shim treats any line carrying `\x1bMIME:` as
+  -- user-visible cell output.  Logging the envelope here once made
+  -- the SVG / HTML / LaTeX previews vanish under a duplicate copy
+  -- of the same marker on every cell, which broke the Playwright
+  -- `#svg embeds an SVG` test.  Keep the diagnostic length-only.
+  IO.eprintln s!"[WasmRepl] displayOutput len={displayOutput.length}"
 
   match result with
   | (.inl response, newState) =>

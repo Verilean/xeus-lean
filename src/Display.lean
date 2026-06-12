@@ -114,7 +114,7 @@ def svg (content : String) : IO Unit := emit "image/svg+xml" content
 def json (content : String) : IO Unit := emit "application/json" content
 
 /-- Pretty-print a `BitVec n` as a 3-row HTML table with binary, hex
-    and decimal renderings. Useful for sparkle / hardware notebooks
+    and decimal renderings. Useful for hardware-design notebooks
     where you want to eyeball the layout of a register or constant. -/
 def bv {n : Nat} (v : BitVec n) : IO Unit := do
   let dec := toString v.toNat
@@ -640,14 +640,14 @@ def bash (cmd : String) : IO Unit := do
 
 `#help_x` lists every notebook command currently registered with
 `Display.helpRegister`. The list is a global `IO.Ref` so other modules
-(Sparkle helpers, Hesper helpers, user-defined ones) can append their
+(downstream helpers, user-defined ones) can append their
 own entries without touching this file:
 
 ```lean
 import Display
 #eval Display.helpRegister {
   command  := "#bv"
-  category := "sparkle"
+  category := "hardware"
   brief    := "Show a BitVec literal in binary, hex, and decimal."
   example  := "#bv 0x42#8"
 }
@@ -659,7 +659,7 @@ alphabetically within each category.
 
 structure HelpEntry where
   command  : String   -- e.g. "#findDecl"
-  category : String   -- e.g. "search", "display", "waveform", "sparkle"
+  category : String   -- e.g. "search", "display", "waveform", "hardware"
   brief    : String   -- one-line description
   -- `usage` rather than `example` because the latter is a Lean keyword.
   usage    : String   -- one-line usage snippet
@@ -1922,7 +1922,7 @@ def waveformFromVCDFile (sessionId : String) (path : String) : IO Unit := do
 `#findDecl "Signal.reg"`         — first 10 matches, case-insensitive substring
 `#findDecl "Signal" "reg"`       — AND search across multiple keywords
 `#findDecl "Signal.reg" 10 20`   — page: skip 10, take 20
-`#listNs Sparkle.Core.Signal`    — declarations whose name starts with that prefix
+`#listNs Foo.Bar`    — declarations whose name starts with that prefix
 `#sig Signal.register`           — single declaration's type signature
 
 The walks the active `Lean.Environment` and filters in O(env-size); current
@@ -2062,7 +2062,7 @@ elab "#findDecl " kws:(str)+ skipTk:(num)? takeTk:(num)? : command => do
   liftCoreM <| Display.emit "text/html" html
 
 open Lean Lean.Elab Lean.Elab.Command Lean.Meta in
-/-- `#listNs Sparkle.Core.Signal skipN? takeN?` — list declarations whose
+/-- `#listNs Foo.Bar skipN? takeN?` — list declarations whose
     fully-qualified name starts with the given namespace prefix. -/
 elab "#listNs " ns:ident skipTk:(num)? takeTk:(num)? : command => do
   let prefixStr := ns.getId.toString
@@ -2135,7 +2135,7 @@ macro "#mermaid " s:str : command => `(#eval Display.mermaid $s)
 /-! ### Built-in help entries
 
 These register on `import Display`. New entries from other modules
-(`SparkleHelp`, future `HesperHelp`, …) call `Display.helpRegister` at
+(downstream registries — `MyLibHelp`, etc.) call `Display.helpRegister` at
 their own initialise time, so users only need to `import` the helper
 module they care about and `#help_x` will pick up the new commands. -/
 
@@ -2164,7 +2164,7 @@ private def builtinHelp : Array Display.HelpEntry := #[
     usage := "#mermaid \"flowchart LR\\n  IN --> R1[(R1)] --> ALU>ALU] --> R2[(R2)] --> OUT\\n  CLK -.-> R1 & R2\"" },
   { command := "Display.verilog", category := "display",
     brief := "Pretty-print a SystemVerilog source string with Highlight.js syntax coloring (CDN-loaded github theme).",
-    usage := "#eval Display.verilog (Sparkle.Backend.Verilog.toVerilog m)" },
+    usage := "#eval Display.verilog \"module dff (...); ...\"" },
   { command := "#blockDiagram", category := "display",
     brief := "Structured HW block diagram (port/reg/mux/cloud/box/andG/orG/notG/adder/const/clk + data/clock/bus edges). Trapezoid MUX, real cloud, gate symbols — shapes Mermaid can't do. Layout uses col/row fields on each node.",
     usage := "#eval Display.blockDiagram { nodes := [...], edges := [...] }" },
@@ -2182,7 +2182,7 @@ private def builtinHelp : Array Display.HelpEntry := #[
     usage := "#findDecl \"Signal\" \"register\" 0 10" },
   { command := "#listNs",   category := "search",
     brief := "List declarations under a namespace prefix.",
-    usage := "#listNs Sparkle.Core.Signal" },
+    usage := "#listNs Foo.Bar" },
   { command := "#sig",      category := "search",
     brief := "Show one declaration's type signature.",
     usage := "#sig Nat.succ" },

@@ -259,35 +259,94 @@ comments inside `src/post.js`.
 
 ## Extending the kernel with your own Lean lib
 
-Downstream projects (Sparkle, Hesper, …) extend
-`ghcr.io/verilean/xeus-lean` by lake-building their own Lean lib and
-re-linking xlean against it. The mechanism is `XEUS_LEAN_EXTRA_LIBS`,
-a generic env-var-driven extension point in `lakefile.lean`. Sketch
-Dockerfile:
+> **What goes in this repo, and what doesn't.**
+>
+> The xeus-lean repository owns three things:
+> 1. The Lean WASM/native kernel (`xlean`, `xlean.wasm/js`) and its
+>    REPL frontend.
+> 2. The JupyterLite hosting glue (`pre.js`, `post.js`, manifest
+>    loader, `%load`, `%memory`).
+> 3. A **vendor-agnostic mechanism** for downstream Lean libraries
+>    to plug their own static archives, Lean externs, and oleans
+>    into both build targets (WASM and native).
+>
+> What it does **not** own: any particular third-party library.
+> Sparkle, Hesper, Mathlib bundle assemblers, future Lean libraries —
+> all of those live in their own repos and use the extension point
+> below.  No third-party project name should appear in xeus-lean's
+> build files (CMake / Dockerfiles / CI workflows / Lean REPL boot).
+>
+> If you find such a name in this repo, file an issue — it's a bug,
+> not a feature.
 
-```dockerfile
-FROM ghcr.io/verilean/xeus-lean:latest
+### Extension point: `EXTRA_WASM_DIRS` (WASM target)
 
-COPY my-lib/ /app/my-lib/
-RUN cd /app/my-lib && lake update && lake build mylib
+The WASM build accepts a CMake variable `EXTRA_WASM_DIRS` — a
+`;`-separated list of staging directories produced by third-party
+projects.  Each staging directory must contain a manifest:
 
-# Bundle compiled olean objects into a static archive.
-RUN cd /app/my-lib/.lake/packages/mylib/.lake/build/ir && \
-    find . -name '*.c.o.export' ! -name 'Main.c.o.export' -print0 \
-      | xargs -0 ar rcs /app/build-cmake/libmy_olean.a
-
-# Relink xlean. --whole-archive is required because no symbol in xlean
-# directly references project libs (the Lean interpreter looks them up
-# at runtime), so a normal link would drop them as dead code.
-RUN rm -f /app/.lake/build/bin/xlean && \
-    XEUS_LEAN_EXTRA_LIBS="-Wl,--whole-archive \
-      /app/build-cmake/libmy_olean.a \
-      /app/my-lib/.lake/.../libmy_ffi.a \
-      -Wl,--no-whole-archive" \
-    lake build xlean
+```json
+// <staging>/xeus-lean-extra.json
+{
+  "archive":    "lib/libmylib_wasm.a",      // whole-archive into xlean
+  "exports":    "lib/mylib_exports.txt",    // one C symbol per line
+  "olean_root": "MyLib"                     // optional; copied to /lib/lean/
+}
 ```
 
-`Dockerfile.native-sparkle` is the worked example.
+The third-party project's build script writes those three artefacts
+into `<staging>/lib/` + `<staging>/MyLib/**` and emits the manifest.
+xeus-lean's CMake then:
+
+1. Whole-archives `libmylib_wasm.a` into `xlean.wasm` (Lean externs
+   would otherwise be DCE'd).
+2. Splats `mylib_exports.txt` into emcc's `-sEXPORTED_FUNCTIONS` so
+   the symbols survive LTO.
+3. Copies `MyLib/**/*.olean` into the JupyterLite olean asset tree
+   alongside `Init/Std/Lean/Mathlib`.
+
+Pass it to the WASM build like so:
+
+```bash
+emcmake cmake -S . -B wasm-build \
+  -DEXTRA_WASM_DIRS="/path/to/mylib-staging;/path/to/otherlib-staging"
+```
+
+### Worked example: `tests/fixtures/mock-extra/`
+
+The repo ships a minimal third-party-style fixture under
+`tests/fixtures/mock-extra/` that exercises the **whole** extension
+path: a `MockExtra` Lean lib with `@[extern "mock_hello"] opaque
+mockHello`, a C file implementing it, a `build-wasm.sh` that emits
+the manifest, and a CI step that links it via `EXTRA_WASM_DIRS` and
+asserts `#eval mockHello ()` returns the expected string.
+
+That fixture is the contract.  If you can write a downstream lib that
+plugs in the same way, you're done.  If `EXTRA_WASM_DIRS` ever
+breaks, the fixture's CI step turns red.
+
+### Build-time caching for downstream consumers
+
+The Lean WASM build itself takes ~30 minutes from cold (Lean
+runtime, REPL, xeus glue, emcc link).  We do **not** want every
+downstream consumer to pay that cost just because they're adding a
+1-MB extra library.  The plan to avoid it:
+
+| Stage | Image / Mechanism | Owner |
+|---|---|---|
+| 1 | Sparkle/Hesper removal + mock-extra fixture exercises the generic path end-to-end via a full WASM rebuild on every CI run. | This PR (#13). |
+| 2 | Publish `ghcr.io/verilean/xeus-lean-wasm-prebuild:<sha>` containing the intermediate `xlean.dir/*.o` + Lean runtime archives + emcc.  CI's WASM job pulls it, builds the third-party staging dir, then **relinks** `xlean.wasm` with `EXTRA_WASM_DIRS` instead of compiling from scratch — should reduce wall time from ~30 min to ~5-10 min. | Follow-up PR. |
+
+So stage 1 proves correctness (the third-party path works); stage 2
+proves it's also fast enough for downstream consumers to use without
+their own CI grinding.  Both stages preserve the rule that xeus-lean
+itself never knows a third-party name.
+
+### Native target
+
+Same story is in progress for the native `xlean` binary (dlopen of
+shared libraries declared via a sibling manifest).  Not yet wired —
+tracked separately so the WASM contract lands first.
 
 ## CI / CD
 

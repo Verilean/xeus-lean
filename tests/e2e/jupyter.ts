@@ -18,7 +18,7 @@ const KERNEL_BOOT_TIMEOUT = 300_000;
 // Cells that hit `import` paths (and therefore a fresh
 // `processInput` → `processHeader` → `importModulesCore`) can take
 // 30-60 s on the GitHub Actions runner where memory pressure from
-// the loaded Std/Lean/Sparkle/Hesper olean trees hurts kernel
+// the loaded Std/Lean olean trees hurts kernel
 // throughput. Locally the same cells finish in 1-2 s, but in CI we
 // have seen `#latex` exceed 60 s. Three minutes is generous enough
 // to absorb that without masking real hangs.
@@ -126,7 +126,14 @@ export async function runCell(page: Page, source: string): Promise<Locator> {
   await page.keyboard.press('Shift+Enter');
 
   // Wait for the output area under the just-run cell.
-  const output = cell.locator('.jp-OutputArea-output').first();
+  //
+  // Use the *container* (`.jp-OutputArea`) rather than the first
+  // individual `.jp-OutputArea-output` element: a single cell can
+  // emit several outputs in sequence (stderr stream first, rich
+  // display widget second), and tests that look for `svg` / `img`
+  // inside the rich payload would miss it if we narrowed to the
+  // stream output that happens to arrive first.
+  const output = cell.locator('.jp-OutputArea').first();
   await output.waitFor({ state: 'visible', timeout: CELL_EXEC_TIMEOUT });
 
   // Wait for kernel to go idle again before moving on.

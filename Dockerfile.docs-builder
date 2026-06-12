@@ -27,8 +27,7 @@ COPY scripts/empty-marker.txt /opt/lean-path/.empty
 #
 # Refresh when any of these change:
 #   src/, include/, cmake/, CMakeLists.txt, lakefile.lean,
-#   lean-toolchain, pixi.toml, pixi.lock, examples/sparkle/,
-#   hesper/, hesper-wasm/, scripts/, this Dockerfile.
+#   lean-toolchain, pixi.toml, pixi.lock, scripts/, this Dockerfile.
 
 FROM ghcr.io/prefix-dev/pixi:latest AS builder
 
@@ -60,9 +59,6 @@ COPY include/      ./include/
 COPY share/        ./share/
 COPY scripts/      ./scripts/
 COPY src/          ./src/
-COPY examples/     ./examples/
-COPY hesper/       ./hesper/
-COPY hesper-wasm/  ./hesper-wasm/
 COPY test_wasm_node.cpp ./
 
 # Bring up enough Lean targets that WasmRepl links and that
@@ -70,18 +66,11 @@ COPY test_wasm_node.cpp ./
 # WASM-side targets; xlean-convert is host.
 RUN lake build REPL Display WasmRepl xlean-convert
 
-# Sparkle .olean → embedded into WASM VFS.
-RUN cd examples/sparkle && lake update && lake build SparkleDemo || \
-    echo "WARN: Sparkle build failed; continuing without Sparkle"
-
-# Hesper WGSL DSL (Phase 1).
-RUN if [ -f hesper/Hesper.lean ]; then \
-      mkdir -p hesper-wasm/build && \
-      bash hesper-wasm/build-wasm.sh hesper hesper-wasm/build \
-        Hesper.WGSL.DSL Hesper.WGSL.Helpers Hesper.WGSL.Templates \
-        Hesper.WGSL.Shader Hesper.WGSL.Kernel \
-        || echo "WARN: hesper-wasm build failed"; \
-    else echo "Hesper submodule absent"; fi
+# Third-party Lean libraries are not built here.  The docs-deploy
+# path only ships math-visual + Lean tutorials, and any downstream
+# image that needs an extra library does its own build and passes
+# -DEXTRA_WASM_DIRS=<staging> to emcmake below.  See README.md
+# "Extending the kernel with your own Lean lib".
 
 # Emscripten + cmake + emmake.
 RUN pixi run -e wasm-build fix-emscripten-links || true
@@ -115,9 +104,6 @@ RUN PREFIX=$(pixi info -e wasm-host --json 2>/dev/null \
       | python3 -c "import sys,json; print(json.load(sys.stdin)['environments_info'][0]['prefix'])" \
       2>/dev/null || echo ".pixi/envs/wasm-host") && \
     if [ -d "$PREFIX/share/jupyter/olean" ]; then \
-      if [ -d hesper-wasm/build/Hesper ]; then \
-        ln -sf "$(realpath hesper-wasm/build/Hesper)" "$PREFIX/share/jupyter/olean/Hesper"; \
-      fi && \
       mkdir -p /opt/xeus-lean/_olean && \
       bash scripts/pack-olean-modules.sh "$PREFIX/share/jupyter/olean" /opt/xeus-lean/_olean "" && \
       ls -lh /opt/xeus-lean/_olean; \
