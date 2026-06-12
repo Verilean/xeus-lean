@@ -100,17 +100,50 @@ emcc -O2 -sMEMORY64 -fPIC \
      -c "$SCRIPT_DIR/c_src/mock_extra_hello.c" \
      -o "$OBJ_HAND"
 
-# The Lean-generated C uses C++-style declarations (`auto`, etc.) in
-# some toolchains; treat it as C source but with `-Wno-everything` to
-# avoid warnings turning into errors.
+# Lean's `lean.h` inlines `mi_malloc_small` directly into the
+# allocator hot path when `LEAN_MIMALLOC` is defined — and
+# `lean/config.h` unconditionally defines it for the v4.x toolchain.
+# Inlining it into the Lean-generated wrappers leaves a reference
+# to a symbol that lives only inside xlean's `libleanrt_wasm.a`,
+# and wasm-ld scans the third-party archive before leanrt, so the
+# reference is unresolved at link time.
+#
+# Two-step workaround:
+#  1. Compile a tiny shim translation unit that provides
+#     `mi_malloc_small` / `mi_free` as thin wrappers around
+#     `lean_alloc_object` / `free` — those are exported normally by
+#     leanrt and resolve cleanly even when archive order is
+#     unfavourable.  In practice the wrappers run a few extra
+#     allocations a session, dwarfed by Lean elaboration cost.
+#  2. Compile the Lean-generated wrappers as normal; the shim's
+#     symbols satisfy what `lean.h`'s inline expansions reference.
+SHIM_C="$STAGING/lib/mock_extra_alloc_shim.c"
+cat > "$SHIM_C" <<'EOF'
+#include <stddef.h>
+#include <stdlib.h>
+extern void* lean_alloc_object(size_t sz);
+
+/* Weak so the real implementations inside libleanrt_wasm.a's mimalloc
+   win when both archives are linked together.  When xlean's leanrt
+   isn't on the link line (it always is, but be defensive) the
+   wrappers above are used as a fallback. */
+__attribute__((weak)) void* mi_malloc_small(size_t sz)        { return lean_alloc_object(sz); }
+__attribute__((weak)) void  mi_free(void* p)                  { free(p); }
+__attribute__((weak)) void  mi_free_size(void* p, size_t sz)  { (void)sz; free(p); }
+EOF
+OBJ_SHIM="$STAGING/lib/mock_extra_alloc_shim.o"
+emcc -O2 -sMEMORY64 -fPIC -w \
+     -c "$SHIM_C" \
+     -o "$OBJ_SHIM"
+
 OBJ_LEAN="$STAGING/lib/mock_extra_lean_wrappers.o"
 emcc -O2 -sMEMORY64 -fPIC -w \
      -I"$LEAN_INCLUDE" \
      -c "$GENERATED_C" \
      -o "$OBJ_LEAN"
 
-emar rcs "$STAGING/lib/libmock_extra_wasm.a" "$OBJ_HAND" "$OBJ_LEAN"
-rm -f "$OBJ_HAND" "$OBJ_LEAN"
+emar rcs "$STAGING/lib/libmock_extra_wasm.a" "$OBJ_HAND" "$OBJ_LEAN" "$OBJ_SHIM"
+rm -f "$OBJ_HAND" "$OBJ_LEAN" "$OBJ_SHIM" "$SHIM_C"
 
 # ---------------------------------------------------------------------
 # 3. Exports file — one symbol per line, with the leading underscore
