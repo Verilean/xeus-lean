@@ -18,7 +18,7 @@ const KERNEL_BOOT_TIMEOUT = 300_000;
 // Cells that hit `import` paths (and therefore a fresh
 // `processInput` → `processHeader` → `importModulesCore`) can take
 // 30-60 s on the GitHub Actions runner where memory pressure from
-// the loaded Std/Lean/Sparkle/Hesper olean trees hurts kernel
+// the loaded Std/Lean olean trees hurts kernel
 // throughput. Locally the same cells finish in 1-2 s, but in CI we
 // have seen `#latex` exceed 60 s. Three minutes is generous enough
 // to absorb that without masking real hangs.
