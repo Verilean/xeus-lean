@@ -106,47 +106,41 @@ def lookup (s : Server) (name : String) : Option Handler :=
 end Server
 
 -- --------------------------------------------------------------------------
--- Transport: Content-Length framed JSON over stdio.
+-- Transport: newline-delimited JSON over stdio.
+--
+-- The MCP stdio transport spec is one JSON-RPC message per line, NOT
+-- LSP's `Content-Length:`-framed form.  Hosts (Claude Code, Cursor, the
+-- official TS/Python SDKs) all send `{...}\n` and then wait for a
+-- `{...}\n` reply; an LSP-style server hangs forever on the missing
+-- header and the host times out at ~30 s.  See
+-- https://spec.modelcontextprotocol.io/specification/basic/transports/#stdio.
 -- --------------------------------------------------------------------------
 
-/-- Read one Content-Length-framed JSON message from `h`.  Returns
-    `none` at EOF, otherwise the parsed JSON. -/
+/-- Read one newline-delimited JSON message from `h`.  Returns `none` at
+    EOF (or on a parse error — host can resync by sending the next
+    message).  Blank lines are tolerated and skipped. -/
 partial def readMessage (h : IO.FS.Stream) : IO (Option Json) := do
-  -- Read header lines until a blank line, collecting Content-Length.
-  let mut contentLen : Option Nat := none
-  let rec readHeaders : IO Unit := pure ()  -- placeholder
-  -- Manual loop instead, since we need to mutate contentLen.
-  let mut done := false
-  while !done do
+  let rec loop : IO (Option Json) := do
     let line ← h.getLine
     if line.isEmpty then
-      -- EOF before any header
+      -- EOF.
       return none
-    -- A bare \r\n terminates the header block.
     let trimmed := line.trim
     if trimmed.isEmpty then
-      done := true
-    else if let some rest := trimmed.dropPrefix? "Content-Length:" then
-      contentLen := rest.trim.toNat?
-  match contentLen with
-  | none => return none
-  | some n =>
-    -- `h.read` returns ByteArray; we want a String.
-    let body ← h.read n.toUSize
-    let s := String.fromUTF8! body
-    match Json.parse s with
-    | .ok j   => return some j
-    | .error _ => return none
+      -- Empty / whitespace-only line — keep reading.
+      loop
+    else
+      match Json.parse trimmed with
+      | .ok j    => return some j
+      | .error _ => return none
+  loop
 
-/-- Write a JSON message in Content-Length-framed form.  Uses
-    `Json.compress` to avoid any embedded newlines that would confuse
-    the framing. -/
+/-- Write a JSON message as a single line terminated by `\n`.
+    `Json.compress` already strips internal whitespace, so the body is
+    safe to concatenate with `\n` without further escaping. -/
 def writeMessage (h : IO.FS.Stream) (j : Json) : IO Unit := do
-  let body := j.compress
-  let bytes := body.toUTF8
-  let header := s!"Content-Length: {bytes.size}\r\n\r\n"
-  h.write header.toUTF8
-  h.write bytes
+  let body := j.compress ++ "\n"
+  h.write body.toUTF8
   h.flush
 
 -- --------------------------------------------------------------------------

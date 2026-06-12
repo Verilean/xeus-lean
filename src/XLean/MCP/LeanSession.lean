@@ -47,8 +47,21 @@ def eval (_s : LeanSession) (code : String) : IO String := do
   -- noticeably awkward.  A temp file is the simpler v0.
   let (_handle, path) ← IO.FS.createTempFile
   IO.FS.writeFile path code
-  let out ← IO.Process.output
-    { cmd  := "lean", args := #[path.toString] }
+  -- If the MCP host's workspace looks like a Lake project, run the
+  -- snippet through `lake env lean` so transitive deps (Sparkle,
+  -- Mathlib, etc.) resolve.  Otherwise fall back to a bare `lean`,
+  -- which is enough for stdlib-only snippets.  Without this branch,
+  -- `import Sparkle` from a `lean_eval` call inside a Sparkle
+  -- checkout fails with "unknown module prefix 'Sparkle'" because the
+  -- bare `lean` only sees the toolchain's stdlib search path.
+  let inLakeProject ← System.FilePath.pathExists "lakefile.lean"
+  let inLakeTomlProject ← System.FilePath.pathExists "lakefile.toml"
+  let (cmd, args) :=
+    if inLakeProject || inLakeTomlProject then
+      ("lake", #["env", "lean", path.toString])
+    else
+      ("lean", #[path.toString])
+  let out ← IO.Process.output { cmd, args }
   -- The `IO.FS.removeFile` is best-effort; if the file was already
   -- swept away we don't care.
   try IO.FS.removeFile path catch _ => pure ()

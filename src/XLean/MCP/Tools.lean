@@ -21,6 +21,8 @@ import XLean.MCP.Protocol
 import XLean.MCP.LeanSession
 import XLean.MCP.FileTools
 import XLean.MCP.NotebookTools
+import XLean.MCP.KernelBridge
+import XLean.MCP.ConvertTools
 
 namespace XLean.MCP
 
@@ -69,16 +71,61 @@ def tool_lean_eval (sess : IO.Ref LeanSession) : ToolInfo × Handler :=
 -- Lifecycle method handlers (initialize, tools/list, tools/call)
 -- --------------------------------------------------------------------------
 
+/-- `kernel_execute`: send a Lean snippet to the *running* xeus-lean
+    kernel (the same one the user's notebook is attached to) and
+    return the cell outputs.  Unlike `lean_eval` this preserves
+    env across calls and emits real MIME outputs (so a cell that
+    renders an SVG waveform here will appear in the user's
+    browser too). -/
+def tool_kernel_execute : ToolInfo × Handler :=
+  let info : ToolInfo :=
+    { name := "kernel_execute"
+      description :=
+        "Execute a Lean snippet against the LIVE xeus-lean kernel "
+        ++ "running under Jupyter Server on localhost:8888.  Shares "
+        ++ "env with the user's notebook session (state persists, "
+        ++ "MIME outputs like `image/svg+xml` waveforms appear in "
+        ++ "the browser).  Returns a JSON array of Jupyter-shaped "
+        ++ "output records (`stream` / `display_data` / `error`)."
+      inputSchema := Json.mkObj
+        [ ("type",       "object")
+        , ("properties", Json.mkObj
+            [ ("code", Json.mkObj
+                [ ("type",        "string")
+                , ("description", "The Lean code to execute.")
+                ])
+            ])
+        , ("required",   Json.arr #["code"])
+        ]
+    }
+  let handler : Handler := fun params => do
+    match params.getObjValAs? String "code" with
+    | .error _ => return .error (-32602, "Missing required parameter: code")
+    | .ok code =>
+      try
+        let result ← KernelBridge.execute code
+        let body := Json.mkObj
+          [ ("status",  result.status)
+          , ("outputs", Json.arr (result.outputs.map KernelBridge.Output.toJson))
+          ]
+        return .ok (textContent body.pretty)
+      catch e =>
+        return .error (-32000, s!"kernel_execute: {e.toString}")
+  (info, handler)
+
 /-- The set of tools we register at server start.  Returned as a list
     so the dispatcher can wire them up + the `tools/list` handler can
     enumerate them. -/
 def builtinTools (sess : IO.Ref LeanSession) : List (ToolInfo × Handler) :=
   [ tool_lean_eval sess
+  , tool_kernel_execute
   , tool_file_read
   , tool_file_write
   , tool_project_search
   , tool_notebook_read
   , tool_notebook_edit
+  , tool_markdown_to_notebook
+  , tool_notebook_to_markdown
     -- More to come:
     -- tool_lean_check sess,
     -- tool_notebook_evaluate,
