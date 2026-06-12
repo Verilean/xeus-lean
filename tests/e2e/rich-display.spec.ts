@@ -58,22 +58,18 @@ test.describe.serial('rich display', () => {
   });
 
   test('#latex renders via MathJax', async () => {
-    // Flaky in CI ONLY: passes locally but the MathJax typeset
-    // pass can take >20 s on the GH Actions runner before any of
-    // `mjx-container` / `.MathJax` / `.jp-RenderedLatex` shows up.
-    // The Lean side is fine — `assertNoError` succeeds — so what
-    // we're observing is purely a rendering-latency wart in the
-    // JupyterLab MIME renderer, unrelated to xlean. Re-enable
-    // when we either bump the selector to something stable or
-    // wait on a `mathjax-ready` event explicitly.
-    test.skip(!!process.env.CI, 'CI-only MathJax render latency');
     const output = await runCell(
       sharedPage,
       String.raw`#latex "\\int_0^1 x^2 \\, dx = \\frac{1}{3}"`
     );
     await assertNoError(output);
+    // Both the outer `.jp-RenderedLatex` widget and the
+    // MathJax-typed `mjx-container` inside it satisfy the
+    // selector, so `.first()` it explicitly — toBeVisible with
+    // a non-strict locator would still pass, but the test reads
+    // more honestly as "at least one of these renders".
     await expect(
-      output.locator('mjx-container, .MathJax, .jp-RenderedLatex')
+      output.locator('mjx-container, .MathJax, .jp-RenderedLatex').first()
     ).toBeVisible();
   });
 
@@ -85,7 +81,7 @@ test.describe.serial('rich display', () => {
     await assertNoError(output);
     // SVG may be rendered inline or wrapped in an <img> tag depending
     // on JupyterLab's MIME renderer. Accept either form.
-    await expect(output.locator('svg, img')).toBeVisible();
+    await expect(output.locator('svg, img').first()).toBeVisible();
   });
 
   test('#eval do loop with Display.latex', async () => {
@@ -134,7 +130,7 @@ test.describe.serial('rich display', () => {
       '#eval Display.waveform "clk" [0,1,0,1,0,1,0,1] (bitWidth := 1) (cellW := 30) (height := 60)'
     );
     // Should produce an SVG with a path element (the waveform line)
-    await expect(output.locator('svg, img')).toBeVisible();
+    await expect(output.locator('svg, img').first()).toBeVisible();
   });
 });
 
