@@ -100,50 +100,43 @@ emcc -O2 -sMEMORY64 -fPIC \
      -c "$SCRIPT_DIR/c_src/mock_extra_hello.c" \
      -o "$OBJ_HAND"
 
-# Lean's `lean.h` inlines `mi_malloc_small` directly into the
-# allocator hot path when `LEAN_MIMALLOC` is defined — and
-# `lean/config.h` unconditionally defines it for the v4.x toolchain.
-# Inlining it into the Lean-generated wrappers leaves a reference
-# to a symbol that lives only inside xlean's `libleanrt_wasm.a`,
-# and wasm-ld scans the third-party archive before leanrt, so the
-# reference is unresolved at link time.
+# Lean's `lean.h` inlines `mi_malloc_small` into the allocator
+# hot path whenever `LEAN_MIMALLOC` is defined, and
+# `lean/config.h` unconditionally defines it for the v4.x
+# toolchain.  When the Lean-generated wrappers inherit that inline
+# expansion, they end up calling `mi_*` from one heap (libc-backed
+# fallback) while libleanrt allocates from a different heap
+# (real mimalloc) — every `lean_dec_ref` on a wrapper-allocated
+# object then trips `RuntimeError: memory access out of bounds`
+# inside `emscripten_builtin_free`.
 #
-# Two-step workaround:
-#  1. Compile a tiny shim translation unit that provides
-#     `mi_malloc_small` / `mi_free` as thin wrappers around
-#     `lean_alloc_object` / `free` — those are exported normally by
-#     leanrt and resolve cleanly even when archive order is
-#     unfavourable.  In practice the wrappers run a few extra
-#     allocations a session, dwarfed by Lean elaboration cost.
-#  2. Compile the Lean-generated wrappers as normal; the shim's
-#     symbols satisfy what `lean.h`'s inline expansions reference.
-SHIM_C="$STAGING/lib/mock_extra_alloc_shim.c"
-cat > "$SHIM_C" <<'EOF'
-#include <stddef.h>
-#include <stdlib.h>
-extern void* lean_alloc_object(size_t sz);
-
-/* Weak so the real implementations inside libleanrt_wasm.a's mimalloc
-   win when both archives are linked together.  When xlean's leanrt
-   isn't on the link line (it always is, but be defensive) the
-   wrappers above are used as a fallback. */
-__attribute__((weak)) void* mi_malloc_small(size_t sz)        { return lean_alloc_object(sz); }
-__attribute__((weak)) void  mi_free(void* p)                  { free(p); }
-__attribute__((weak)) void  mi_free_size(void* p, size_t sz)  { (void)sz; free(p); }
+# Cleanest fix: compile the wrappers as if `LEAN_MIMALLOC` were
+# never set.  `lean/config.h` is `#pragma once` so it's only
+# evaluated the first time; `-include` of config.h forces that
+# first evaluation now, and the override header `#undef`s the
+# macro before `<lean/lean.h>` is read.  All subsequent
+# `#include <lean/lean.h>` calls in the TU find the guard already
+# satisfied and skip re-defining the macro, so the file falls
+# through to the plain `malloc`/`free` code paths consistently.
+# Those depend only on libc, which is on every emcc link line.
+#
+# xlean's main TUs are unaffected because they're compiled
+# without these overrides.
+OVERRIDE_H="$STAGING/lib/mock_extra_no_mimalloc.h"
+cat > "$OVERRIDE_H" <<'EOF'
+#undef LEAN_MIMALLOC
 EOF
-OBJ_SHIM="$STAGING/lib/mock_extra_alloc_shim.o"
-emcc -O2 -sMEMORY64 -fPIC -w \
-     -c "$SHIM_C" \
-     -o "$OBJ_SHIM"
-
 OBJ_LEAN="$STAGING/lib/mock_extra_lean_wrappers.o"
 emcc -O2 -sMEMORY64 -fPIC -w \
      -I"$LEAN_INCLUDE" \
+     -include lean/config.h \
+     -include "$OVERRIDE_H" \
      -c "$GENERATED_C" \
      -o "$OBJ_LEAN"
+rm -f "$OVERRIDE_H"
 
-emar rcs "$STAGING/lib/libmock_extra_wasm.a" "$OBJ_HAND" "$OBJ_LEAN" "$OBJ_SHIM"
-rm -f "$OBJ_HAND" "$OBJ_LEAN" "$OBJ_SHIM" "$SHIM_C"
+emar rcs "$STAGING/lib/libmock_extra_wasm.a" "$OBJ_HAND" "$OBJ_LEAN"
+rm -f "$OBJ_HAND" "$OBJ_LEAN"
 
 # ---------------------------------------------------------------------
 # 3. Exports file — one symbol per line, with the leading underscore
