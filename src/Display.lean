@@ -7,6 +7,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 import Init
 import Lean.Data.Json
 import Lean.Elab.Command  -- for `#findDecl` etc. (walks the env)
+import Lean.Elab.Frontend -- for `#load_file` — runs another file's commands
 import CommBus
 
 /-!
@@ -2131,6 +2132,43 @@ macro "#savefig " s:str : command => `(#eval Display.savefig $s)
     On first call per page mermaid.js is fetched from a CDN; subsequent
     diagrams reuse the cached library. See `Display.mermaid` for details. -/
 macro "#mermaid " s:str : command => `(#eval Display.mermaid $s)
+
+/-- `#load_file "/tmp/foo.lean"` — read a Lean source file from disk
+    and elaborate its commands into the running kernel session's
+    current environment.
+
+    Behaves like pasting the file's contents into a cell, with two
+    practical differences:
+
+    1. **Module headers (imports) inside the file are ignored** with
+       a warning.  xeus-lean's REPL locks the env's `import` list to
+       what was loaded at session start; we can't add new modules
+       on the fly.  Definitions, theorems, `instance`s, `open`s,
+       `namespace`s, `@[extern]` declarations, etc. all work
+       normally.
+    2. **One error in the file does not abort the cell** — every
+       command's diagnostics (info / warning / error) is forwarded to
+       the cell's message log so the user sees what landed and what
+       didn't.
+
+    Pair with `IO.FS.writeFile` (or the MCP `file_write` tool) to get
+    a "draft a snippet → save it → load it into the kernel" loop
+    without restarting the session. -/
+elab "#load_file " path:str : command => do
+  let p := path.getString
+  let src ← IO.FS.readFile p
+  let env  ← Lean.MonadEnv.getEnv
+  let opts ← Lean.MonadOptions.getOptions
+  let (newEnv, msgs) ← Lean.Elab.process src env opts (some p)
+  Lean.setEnv newEnv
+  -- Forward every diagnostic from the loaded file as a cell message.
+  let msgList := msgs.toList
+  for m in msgList do
+    let s ← m.data.toString
+    match m.severity with
+    | .information => Lean.logInfo s
+    | .warning     => Lean.logWarning s
+    | .error       => Lean.logError s
 
 /-! ### Built-in help entries
 
