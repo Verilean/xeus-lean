@@ -104,7 +104,7 @@ def request (method : String) (host : String) (port : UInt16)
     [ ("Host", s!"{host}:{port}")
     , ("Connection", "close")
     , ("Accept", "application/json")
-    , ("Content-Length", toString body.length)
+    , ("Content-Length", toString body.toUTF8.size)
     , ("Content-Type", "application/json") ]
   let allHeaders := baseHeaders ++ headers
   let headerLines := String.join (allHeaders.map fun (k, v) => s!"{k}: {v}\r\n")

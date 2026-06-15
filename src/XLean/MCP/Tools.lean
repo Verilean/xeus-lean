@@ -23,6 +23,7 @@ import XLean.MCP.FileTools
 import XLean.MCP.NotebookTools
 import XLean.MCP.KernelBridge
 import XLean.MCP.ConvertTools
+import XLean.MCP.NotebookRun
 
 namespace XLean.MCP
 
@@ -126,6 +127,7 @@ def builtinTools (sess : IO.Ref LeanSession) : List (ToolInfo × Handler) :=
   , tool_notebook_edit
   , tool_markdown_to_notebook
   , tool_notebook_to_markdown
+  , tool_notebook_run_cell
     -- More to come:
     -- tool_lean_check sess,
     -- tool_notebook_evaluate,
