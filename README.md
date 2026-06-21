@@ -372,3 +372,8 @@ Apache License 2.0.
   the formal-math library; the per-namespace chunks under
   `xeus/wasm-host/olean/Mathlib.*-olean.tar.zst` come from Mathlib's
   build for our pinned Lean toolchain.
+
+## Community
+
+- **Discord**: [https://discord.gg/94Xueve8WD](https://discord.gg/94Xueve8WD)
+  — design discussion, weekly progress threads, beginner Q&A.
