@@ -159,7 +159,35 @@ application developer, the reference-counted, compile-to-C runtime is the
 headline feature, and §18.5 is the case where it is not a nicety but a
 different order of performance.
 
-## 18.7 Where to go next
+## 18.7 Further reading — the primary sources
+
+The claims above are not folklore; the reference-counting runtime is
+documented and open. If you want the specification rather than the
+summary:
+
+- **"Counting Immutable Beans: Reference Counting Optimized for Purely
+  Functional Programming"**, Sebastian Ullrich & Leonardo de Moura
+  (IFL 2019) — <https://arxiv.org/abs/1908.05647>. The definitive
+  description of Lean 4's reference counting, the reuse analysis behind
+  FBIP (§18.3), and borrow inference. Read this first.
+- **"Perceus: Garbage Free Reference Counting with Reuse"**, Reinking,
+  Xie, de Moura & Leijen (PLDI 2021) —
+  <https://www.microsoft.com/en-us/research/publication/perceus-garbage-free-reference-counting-with-reuse/>.
+  The same line of work in Koka; the precise-reuse theory Lean's model
+  shares.
+- **The runtime object model, in the source** — the header defines the
+  object layout, `lean_inc` / `lean_dec` (the count operations), and
+  `lean_register_external_class` (the finalizer = destructor of §18.4):
+  <https://github.com/leanprover/lean4/blob/master/src/include/lean/lean.h>
+  with the implementation in
+  <https://github.com/leanprover/lean4/blob/master/src/runtime/object.cpp>.
+- **The Lean FFI documentation** — `@[extern]`, external objects, and
+  how a C resource is wrapped with a finalizer:
+  <https://lean-lang.org/doc/reference/latest/> (Lean Language Reference,
+  FFI section) and the compiler/runtime docs under
+  <https://github.com/leanprover/lean4/tree/master/src/runtime>.
+
+## 18.8 Where to go next
 
 - Ch 17 — the Haskell → Lean translation guide and how to find APIs.
 - Ch 11 / Ch 12 — processes and sockets, where deterministic handle
