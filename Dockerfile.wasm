@@ -11,7 +11,7 @@ FROM ghcr.io/prefix-dev/pixi:latest AS builder
 # Force frozen mode globally so every pixi call (install/run/info) uses
 # the committed pixi.lock as-is; newer pixi otherwise re-solves the whole
 # lockfile, pulls in the `default` env, and fails resolving `make`.
-ENV PIXI_FROZEN=1
+ENV PIXI_FROZEN=true
 
 # Install curl, git for elan, xz-utils for node binary, and python3
 # for the pixi-prefix discovery and kernel.json rewrite steps.

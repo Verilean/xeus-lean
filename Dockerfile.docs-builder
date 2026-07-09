@@ -36,7 +36,7 @@ FROM ghcr.io/prefix-dev/pixi:latest AS builder
 # re-solve pulls in the `default` env and fails on `make`. Force frozen
 # mode globally so every pixi call — build-time and the docs-deploy job's
 # `pixi run` inside this image — uses the committed pixi.lock as-is.
-ENV PIXI_FROZEN=1
+ENV PIXI_FROZEN=true
 
 RUN apt-get update && \
     apt-get install -y curl git xz-utils python3 zstd && \
