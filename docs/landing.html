@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>xeus-lean — Lean 4 in your browser</title>
+<!-- REQUIRED: JupyterLite (under /lab/) walks the parent index chain and
+     parses this element to build a merged config; without it the lab
+     crashes with "Cannot read properties of null (reading 'textContent')".
+     Empty {} is fine — /lab/'s own jupyter-lite.json carries the real config. -->
+<script id="jupyter-config-data" type="application/json">{}</script>
+<style>body{font-family:system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 16px;line-height:1.55}h1{margin-bottom:.2em}h2{margin-top:1.5em}.lead{color:#555;font-size:1.1em;margin-top:0}a{color:#0366d6;text-decoration:none}a:hover{text-decoration:underline}ul{padding-left:1.2em}li{margin:.3em 0}code{background:#f4f4f4;padding:.1em .3em;border-radius:3px}</style>
+</head><body>
+<h1>xeus-lean</h1>
+<p class="lead">A Lean 4 Jupyter kernel that runs entirely in the browser (WebAssembly), with practical, application-oriented tutorials.</p>
+<h2>Documentation</h2>
+<ul>
+  <li><a href="tutorial/">Learn Lean 4</a> — a practical, application-developer tutorial: values, data structures, <code>IO</code>, files, processes, networking, concurrency, JSON, macros, coming from Haskell, and why the reference-counted runtime behaves like C.</li>
+  <li><a href="lab/">JupyterLite</a> — run every chapter live in your browser (the xlean WASM kernel, no install required).</li>
+</ul>
+<h2>Visual mathematics</h2>
+<ul>
+  <li><a href="math-visual/complex-analysis/">Visual Complex Analysis</a> — an interactive, notebook-based walk-through, runnable in the browser.</li>
+  <li><a href="math-visual/real-analysis/">Visual Real Analysis</a> — likewise, for real analysis.</li>
+</ul>
+<h2>Source</h2>
+<p><a href="https://github.com/Verilean/xeus-lean">github.com/Verilean/xeus-lean</a></p>
+</body></html>
