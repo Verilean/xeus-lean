@@ -27,8 +27,13 @@ WORKDIR /opt/xeus-lean
 COPY pixi.toml pixi.lock* ./
 
 # Install wasm-build and wasm-host environments
-RUN pixi install -e wasm-build || pixi install -e wasm-build --no-lockfile-update
-RUN pixi install -e wasm-host || pixi install -e wasm-host --no-lockfile-update
+# Install straight from the committed pixi.lock. `--frozen` stops newer
+# pixi (the base image floats on :latest) from re-solving the whole
+# lockfile — which otherwise drags in the `default` env and fails on
+# `make` for a platform we never build here. The lock already contains
+# wasm-build / wasm-host fully solved, so this just materialises them.
+RUN pixi install --frozen -e wasm-build
+RUN pixi install --frozen -e wasm-host
 
 # Copy source.
 #
