@@ -31,6 +31,13 @@ COPY scripts/empty-marker.txt /opt/lean-path/.empty
 
 FROM ghcr.io/prefix-dev/pixi:latest AS builder
 
+# The base image floats on :latest; newer pixi re-solves the whole
+# lockfile on every `pixi install`/`run`/`info` unless told not to. That
+# re-solve pulls in the `default` env and fails on `make`. Force frozen
+# mode globally so every pixi call — build-time and the docs-deploy job's
+# `pixi run` inside this image — uses the committed pixi.lock as-is.
+ENV PIXI_FROZEN=true
+
 RUN apt-get update && \
     apt-get install -y curl git xz-utils python3 zstd && \
     rm -rf /var/lib/apt/lists/*
@@ -47,8 +54,16 @@ WORKDIR /opt/xeus-lean
 
 # Pixi envs first for layer caching.
 COPY pixi.toml pixi.lock* ./
-RUN pixi install -e wasm-build || pixi install -e wasm-build --no-lockfile-update
-RUN pixi install -e wasm-host  || pixi install -e wasm-host  --no-lockfile-update
+# Install straight from the committed pixi.lock. `--frozen` stops newer
+# pixi (the base image floats on :latest) from re-solving the whole
+# lockfile — which otherwise drags in the `default` env and fails on
+# `make` for a platform we never build here. The lock already contains
+# wasm-build / wasm-host fully solved, so this just materialises them.
+RUN pixi install --frozen -e wasm-build
+# wasm-host targets emscripten-wasm32 — its packages are packed into the
+# JupyterLite site, never executed on this linux-64 builder. Newer pixi
+# refuses a non-native env unless the target platform is named explicitly.
+RUN pixi install --frozen --platform emscripten-wasm32 -e wasm-host
 
 # Narrow copies so editing docs/, notebooks/, README, etc. does NOT
 # invalidate the heavy emcc / lake layers.
