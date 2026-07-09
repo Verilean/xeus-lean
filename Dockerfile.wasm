@@ -33,7 +33,10 @@ COPY pixi.toml pixi.lock* ./
 # `make` for a platform we never build here. The lock already contains
 # wasm-build / wasm-host fully solved, so this just materialises them.
 RUN pixi install --frozen -e wasm-build
-RUN pixi install --frozen -e wasm-host
+# wasm-host targets emscripten-wasm32 — its packages are packed into the
+# JupyterLite site, never executed on this linux-64 builder. Newer pixi
+# refuses a non-native env unless the target platform is named explicitly.
+RUN pixi install --frozen --platform emscripten-wasm32 -e wasm-host
 
 # Copy source.
 #
