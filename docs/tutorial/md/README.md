@@ -44,6 +44,10 @@ chapter without firing up a kernel.
 - **Ch15 — [Macros](Ch15_Macros.md)** — `notation`, `macro`, `elab`, hygiene, anti-quotation, when *not* to write one
 - **Ch16 — [Type-level programming](Ch16_TypeLevel.md)** — type application, value↔type, GADTs / type families, side-by-side with Haskell
 
+### Part V — Coming from Haskell / choosing Lean
+- **Ch17 — [Coming from Haskell](Ch17_FromHaskell.md)** — Haskell ↔ Lean 4 syntax/idiom table, mutation (`IORef`/`MVar`/`STRef` → `IO.Ref`/`let mut`), and how to find an API without Hackage (editor, `#check`, `exact?`, Loogle / Moogle, grep the source)
+- **Ch18 — [Why Lean 4 runs like C, not GHC](Ch18_WhyLean4.md)** — compile-to-C pipeline, reference counting vs. tracing GC, FBIP, C/C++ interop with destructors, the GC × FFI mismatch (why 100 K live native handles hurt a copying GC but not refcounting), and an honest "pick Lean vs. pick GHC" table
+
 ## How this is built
 
 The chapters live as plain Markdown under `docs/tutorial/md/`. The
