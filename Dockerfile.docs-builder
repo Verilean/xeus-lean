@@ -31,6 +31,13 @@ COPY scripts/empty-marker.txt /opt/lean-path/.empty
 
 FROM ghcr.io/prefix-dev/pixi:latest AS builder
 
+# The base image floats on :latest; newer pixi re-solves the whole
+# lockfile on every `pixi install`/`run`/`info` unless told not to. That
+# re-solve pulls in the `default` env and fails on `make`. Force frozen
+# mode globally so every pixi call — build-time and the docs-deploy job's
+# `pixi run` inside this image — uses the committed pixi.lock as-is.
+ENV PIXI_FROZEN=1
+
 RUN apt-get update && \
     apt-get install -y curl git xz-utils python3 zstd && \
     rm -rf /var/lib/apt/lists/*
