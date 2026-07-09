@@ -19,7 +19,7 @@ sequel to the [Complex Analysis](../complex-analysis/README.md) one.
 | Chapter | Topic |
 |---|---|
 | [Ch01 The geometric product](Ch01_GeometricProduct.md) | `ab = a·b + a∧b`; the bivector as oriented area; why `e₁e₂ = −e₂e₁` |
-| Ch02 Outer product & grades *(planned)* | wedge, grades 0–2, the graded structure |
+| [Ch02 The outer product & grades](Ch02_OuterProduct.md) | `a∧b`, `a∧a=0`, grades 0–2, grade projection |
 | Ch03 Rotors *(planned)* | `v ↦ R v R⁻¹`, `R = e^{−Bθ/2}`; rotation without matrices |
 | Ch04 Reflections *(planned)* | two reflections compose to a rotation |
 | Ch05 ℂ and ℍ as even subalgebras *(planned)* | Cl⁺(2) ≅ ℂ, Cl⁺(3) ≅ ℍ |
