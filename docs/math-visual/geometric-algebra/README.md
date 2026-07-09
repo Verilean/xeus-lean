@@ -23,9 +23,9 @@ sequel to the [Complex Analysis](../complex-analysis/README.md) one.
 | [Ch03 Rotors](Ch03_Rotors.md) | `v ↦ R v R̃`, `R = e^{−e₁₂θ/2}`; rotation without matrices; the half-angle |
 | [Ch04 Reflections](Ch04_Reflections.md) | `v ↦ n v n`; two reflections compose to a rotation by twice the angle |
 | [Ch05 ℂ and ℍ inside](Ch05_ComplexQuaternion.md) | Cl⁺(2) ≅ ℂ (proven), Cl⁺(3) ≅ ℍ; a rotor is a unit complex / quaternion |
-| Ch06 Duality & the cross product *(planned)* | pseudoscalar, `a×b = ⋆(a∧b)` |
-| Ch07 3D rotations *(planned)* | the rotor group, Rodrigues |
-| Ch08 Conformal GA *(planned)* | points, spheres, translations as rotations |
+| [Ch06 Duality & the cross product](Ch06_Duality.md) | pseudoscalar, `a×b = ⋆(a∧b)`, why it's 3D-only |
+| [Ch07 Rotations in 3D](Ch07_3DRotations.md) | full 3D geometric product; quaternion rotation, plane-first |
+| [Ch08 Conformal GA](Ch08_ConformalGA.md) | points as null vectors, distance = inner product, translations as versors |
 
 ## How each chapter is shaped
 
